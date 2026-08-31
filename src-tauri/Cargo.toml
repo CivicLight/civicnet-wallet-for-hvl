@@ -1,0 +1,27 @@
+[package]
+name = "civicnet-wallet"
+version = "0.1.0"
+description = "CivicNet Wallet"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "civicnet_wallet_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-shell = "2.3.5"
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+reqwest = { version = "0.13.4", features = ["json", "multipart"] }
+rand = "0.10.2"
+sha2 = "0.10"
+hex = "0.4"
