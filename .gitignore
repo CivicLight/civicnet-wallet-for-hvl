@@ -32,3 +32,4 @@ src-tauri/pinata_jwt.secret
 
 # Tauri
 *.pdb
+src-tauri/binaries/

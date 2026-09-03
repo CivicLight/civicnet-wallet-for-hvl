@@ -9,7 +9,7 @@ interface OverviewProps {
   address: string;
   stakingUnlocked: boolean;
   walletEncrypted: boolean;
-  onUnlockStaking: (passphrase: string) => Promise<void>;
+  onUnlockStaking: (passphrase: string, stakingOnly: boolean) => Promise<void>;
   onLockWallet: () => Promise<void>;
   onEncryptWallet: (passphrase: string) => Promise<void>;
   onTxClick: (txid: string) => void;
@@ -77,13 +77,14 @@ function StakingCard({
 }: {
   stakingUnlocked: boolean;
   walletEncrypted: boolean;
-  onUnlockStaking: (passphrase: string) => Promise<void>;
+  onUnlockStaking: (passphrase: string, stakingOnly: boolean) => Promise<void>;
   onLockWallet: () => Promise<void>;
   onEncryptWallet: (passphrase: string) => Promise<void>;
 }) {
   const [showForm, setShowForm] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [confirmPassphrase, setConfirmPassphrase] = useState("");
+  const [stakingOnly, setStakingOnly] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -92,7 +93,7 @@ function StakingCard({
     setBusy(true);
     setError("");
     try {
-      await onUnlockStaking(passphrase);
+      await onUnlockStaking(passphrase, stakingOnly);
       setPassphrase("");
       setShowForm(false);
     } catch (e: any) {
@@ -251,6 +252,14 @@ function StakingCard({
             placeholder="Wallet passphrase"
             className="mb-2 w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500"
           />
+          <label className="mb-2 flex items-center gap-2 text-xs text-slate-400">
+            <input
+              type="checkbox"
+              checked={stakingOnly}
+              onChange={(e) => setStakingOnly(e.target.checked)}
+            />
+            Staking only (spending stays locked). Uncheck to also allow sending funds.
+          </label>
           {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
           <div className="flex gap-2">
             <button

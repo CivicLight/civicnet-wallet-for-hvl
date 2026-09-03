@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Download, Check, Info, KeyRound, Upload, AlertTriangle, Power } from "lucide-react";
-import { exit } from "@tauri-apps/plugin-process";
+import { Download, Check, Info, KeyRound, Upload, AlertTriangle, Power, FileArchive } from "lucide-react";
 
-export default function Settings() {
+interface SettingsProps {
+  onWalletImported: () => void;
+}
+
+export default function Settings({ onWalletImported }: SettingsProps) {
   const [version, setVersion] = useState("");
   const [height, setHeight] = useState(0);
   const [peers, setPeers] = useState(0);
@@ -23,6 +26,11 @@ export default function Settings() {
   const [importing, setImporting] = useState(false);
   const [imported, setImported] = useState(false);
   const [importError, setImportError] = useState("");
+
+  const [walletDatName, setWalletDatName] = useState("");
+  const [walletDatBusy, setWalletDatBusy] = useState(false);
+  const [walletDatDone, setWalletDatDone] = useState(false);
+  const [walletDatError, setWalletDatError] = useState("");
 
   const [oldPass, setOldPass] = useState("");
   const [newPass, setNewPass] = useState("");
@@ -99,6 +107,29 @@ export default function Settings() {
       setImportError(String(e).replace(/^RPC error:\s*/, ""));
     } finally {
       setImporting(false);
+    }
+  }
+
+  async function handleImportWalletDat() {
+    const name = walletDatName.trim();
+    if (!name) {
+      setWalletDatError("Give this wallet a name first");
+      return;
+    }
+    const selected = await open({ multiple: false, filters: [{ name: "Wallet file", extensions: ["dat"] }] });
+    if (!selected || typeof selected !== "string") return;
+    setWalletDatBusy(true);
+    setWalletDatError("");
+    setWalletDatDone(false);
+    try {
+      await invoke("wallet_import_walletdat", { sourcePath: selected, walletName: name });
+      setWalletDatDone(true);
+      setWalletDatName("");
+      onWalletImported();
+    } catch (e: any) {
+      setWalletDatError(String(e).replace(/^RPC error:\s*/, ""));
+    } finally {
+      setWalletDatBusy(false);
     }
   }
 
@@ -244,6 +275,38 @@ export default function Settings() {
       </div>
 
       <div className="mb-4 max-w-lg rounded-2xl border border-white/5 bg-[#111726] p-5">
+        <h2 className="mb-2 flex items-center gap-2 text-sm font-medium text-white">
+          <FileArchive size={15} /> Import a wallet.dat File
+        </h2>
+        <p className="mb-4 text-xs text-slate-500">
+          Bring in an entire wallet (e.g. from CivicNet-Qt) as its own separate wallet here, with its own
+          balance, history, and passphrase. Give it a name to identify it in the wallet switcher.
+        </p>
+        <input
+          type="text"
+          value={walletDatName}
+          onChange={(e) => setWalletDatName(e.target.value)}
+          placeholder="Name for this wallet"
+          className="mb-3 w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white placeholder-slate-600 outline-none focus:border-blue-500"
+        />
+        {walletDatError && (
+          <div className="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{walletDatError}</div>
+        )}
+        {walletDatDone && (
+          <div className="mb-3 flex items-center gap-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">
+            <Check size={14} /> Wallet imported and switched to
+          </div>
+        )}
+        <button
+          onClick={handleImportWalletDat}
+          disabled={walletDatBusy || !walletDatName.trim()}
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-white/5 py-2.5 text-sm font-medium text-white hover:bg-white/10 disabled:opacity-50"
+        >
+          <Upload size={15} /> {walletDatBusy ? "Importing..." : "Choose wallet.dat File"}
+        </button>
+      </div>
+
+      <div className="mb-4 max-w-lg rounded-2xl border border-white/5 bg-[#111726] p-5">
         <h2 className="mb-4 text-sm font-medium text-white">Wallet Backup</h2>
         <p className="mb-4 text-sm text-slate-500">
           Save a copy of your wallet file. Keep it somewhere safe — anyone with this file can access your funds.
@@ -265,7 +328,7 @@ export default function Settings() {
 
       <div className="mb-4 max-w-lg rounded-2xl border border-white/5 bg-[#111726] p-5">
         <button
-          onClick={() => exit(0)}
+          onClick={() => invoke("exit_app")}
           className="flex w-full items-center justify-center gap-2 rounded-lg bg-white/5 py-2.5 text-sm font-medium text-white hover:bg-red-500/10 hover:text-red-400"
         >
           <Power size={15} /> Exit Wallet

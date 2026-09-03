@@ -4,6 +4,7 @@ import { Layers, Plus } from "lucide-react";
 import civicLogo from "../assets/civic-logo.png";
 import { fetchTokenImageUrl } from "../lib/tokenMetadata";
 import type { View } from "./Sidebar";
+import WalletSwitcher from "./WalletSwitcher";
 
 interface RightPanelProps {
   address: string;
@@ -11,6 +12,7 @@ interface RightPanelProps {
   nodeHeight: number;
   peers: number;
   onNavigate: (view: View) => void;
+  onWalletSwitched: () => void;
 }
 
 interface TokenBalance {
@@ -22,17 +24,12 @@ interface TokenBalance {
   metadataUri?: string;
 }
 
-function shortAddr(addr: string): string {
-  if (!addr) return "—";
-  return `${addr.slice(0, 8)}...${addr.slice(-5)}`;
-}
-
 function formatTokenAmount(amount: number, decimals: number): string {
   const divisor = Math.pow(10, decimals);
   return (amount / divisor).toLocaleString(undefined, { maximumFractionDigits: decimals });
 }
 
-export default function RightPanel({ address, balance, nodeHeight, peers, onNavigate }: RightPanelProps) {
+export default function RightPanel({ address, balance, nodeHeight, peers, onNavigate, onWalletSwitched }: RightPanelProps) {
   const [tokens, setTokens] = useState<TokenBalance[]>([]);
   const [images, setImages] = useState<Record<string, string>>({});
 
@@ -67,14 +64,7 @@ export default function RightPanel({ address, balance, nodeHeight, peers, onNavi
 
   return (
     <aside className="flex h-full w-80 flex-col gap-4 overflow-y-auto border-l border-white/5 bg-[#0d1220] px-4 py-4">
-      <div className="flex items-center justify-between rounded-lg bg-white/5 px-3 py-2">
-        <div className="flex items-center gap-2">
-          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
-            <span className="text-[10px] font-bold">C</span>
-          </div>
-          <span className="text-sm text-slate-200">{shortAddr(address)}</span>
-        </div>
-      </div>
+      <WalletSwitcher address={address} onSwitched={onWalletSwitched} />
 
       <div className="rounded-2xl border border-white/5 bg-[#111726] p-4">
         <div className="mb-3 flex items-center justify-between">

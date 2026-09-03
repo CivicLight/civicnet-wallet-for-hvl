@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Sparkles, Check, ImagePlus, X } from "lucide-react";
+import { Sparkles, Check, ImagePlus, X, Lock } from "lucide-react";
 
 export default function CreateAsset() {
   const [symbol, setSymbol] = useState("");
@@ -20,6 +20,11 @@ export default function CreateAsset() {
   const [statusMsg, setStatusMsg] = useState("");
   const [error, setError] = useState("");
   const [tokenId, setTokenId] = useState("");
+  const [showUnlock, setShowUnlock] = useState(false);
+  const [unlockPassphrase, setUnlockPassphrase] = useState("");
+  const [unlockStakingOnly, setUnlockStakingOnly] = useState(false);
+  const [unlockBusy, setUnlockBusy] = useState(false);
+  const [unlockError, setUnlockError] = useState("");
 
   const MAX_TOKEN_SUPPLY_CAP = 1000000000; // smallest-unit cap enforced by consensus
   const scale = Math.pow(10, parseInt(decimals || "0"));
@@ -52,6 +57,22 @@ export default function CreateAsset() {
     setStatusMsg("");
     setTokenId("");
     try {
+      // Creating a token signs/broadcasts a real spend, so the wallet must
+      // be unlocked for spending (not staking-only, and not locked) before
+      // we attempt it -- otherwise the node rejects with a raw RPC error
+      // that's confusing to a user who doesn't know what "unlock" means here.
+      try {
+        const lock = await invoke<{ unlocked: boolean; staking_only: boolean; encrypted: boolean }>(
+          "wallet_get_lock_status"
+        );
+        if (lock.encrypted && (!lock.unlocked || lock.staking_only)) {
+          setBusy(false);
+          setShowUnlock(true);
+          return;
+        }
+      } catch {
+        /* unencrypted wallet has no lock status -- spending is already allowed */
+      }
       const scaleFactor = Math.pow(10, parseInt(decimals));
       setStatusMsg("Issuing token...");
       const result = await invoke<{ tokenId: string }>("wallet_create_token", {
@@ -301,6 +322,80 @@ export default function CreateAsset() {
           <Sparkles size={16} /> {busy ? statusMsg || "Creating..." : "Create Asset"}
         </button>
       </div>
+
+      {showUnlock && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#151b2c] p-5">
+            <div className="mb-3 flex items-center gap-2 text-white">
+              <Lock size={16} />
+              <span className="text-sm font-semibold">Unlock Wallet</span>
+            </div>
+            <p className="mb-3 text-xs text-slate-400">
+              Creating a token requires signing a transaction -- unlock your wallet to continue.
+            </p>
+            <input
+              type="password"
+              autoFocus
+              value={unlockPassphrase}
+              onChange={(e) => setUnlockPassphrase(e.target.value)}
+              placeholder="Wallet passphrase"
+              className="mb-3 w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white placeholder-slate-600 outline-none focus:border-blue-500"
+            />
+            <label className="mb-4 flex items-start gap-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={unlockStakingOnly}
+                onChange={(e) => setUnlockStakingOnly(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 rounded border-white/20 bg-black/20"
+              />
+              <span>
+                Unlock for staking only (spending stays locked). Leave unchecked to also allow this token
+                creation -- your wallet will still be eligible to stake either way.
+              </span>
+            </label>
+            {unlockError && (
+              <div className="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{unlockError}</div>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  setUnlockBusy(true);
+                  setUnlockError("");
+                  try {
+                    await invoke("wallet_unlock", {
+                      passphrase: unlockPassphrase,
+                      stakingOnly: unlockStakingOnly,
+                    });
+                    setShowUnlock(false);
+                    setUnlockPassphrase("");
+                    if (!unlockStakingOnly) {
+                      handleCreate();
+                    }
+                  } catch (e: any) {
+                    setUnlockError(String(e).replace(/^RPC error:\s*/, ""));
+                  } finally {
+                    setUnlockBusy(false);
+                  }
+                }}
+                disabled={unlockBusy || !unlockPassphrase}
+                className="flex-1 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              >
+                {unlockBusy ? "Unlocking..." : "Unlock"}
+              </button>
+              <button
+                onClick={() => {
+                  setShowUnlock(false);
+                  setUnlockPassphrase("");
+                  setUnlockError("");
+                }}
+                className="flex-1 rounded-lg bg-white/5 py-2 text-sm text-slate-300 hover:bg-white/10"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

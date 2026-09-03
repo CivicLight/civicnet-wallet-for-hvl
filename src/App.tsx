@@ -88,8 +88,8 @@ export default function App() {
     setAddress(addr);
   }, []);
 
-  const handleUnlockStaking = useCallback(async (passphrase: string) => {
-    await invoke("wallet_unlock_staking", { passphrase });
+  const handleUnlockStaking = useCallback(async (passphrase: string, stakingOnly: boolean) => {
+    await invoke("wallet_unlock", { passphrase, stakingOnly });
     const lock = await invoke<LockStatus>("wallet_get_lock_status");
     setLockStatus(lock);
   }, []);
@@ -105,6 +105,15 @@ export default function App() {
     const lock = await invoke<LockStatus>("wallet_get_lock_status");
     setLockStatus(lock);
   }, []);
+
+  const handleWalletSwitched = useCallback(async () => {
+    setAddress("");
+    setTransactions([]);
+    setLockStatus({ unlocked: false, staking_only: false, encrypted: true });
+    await refreshWalletData();
+    const addr = await invoke<string>("wallet_get_new_address");
+    setAddress(addr);
+  }, [refreshWalletData]);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,7 +177,7 @@ export default function App() {
       <div className="flex h-screen w-screen bg-[#0b0f17]">
         <Sidebar active={view} onNavigate={setView} nodeHeight={nodeHeight} nodeConnected={status === "ready"} />
         <TransactionDetail txid={selectedTxid} onBack={() => setSelectedTxid(null)} />
-        <RightPanel address={address} balance={balance} nodeHeight={nodeHeight} peers={peers} onNavigate={setView} />
+        <RightPanel address={address} balance={balance} nodeHeight={nodeHeight} peers={peers} onNavigate={setView} onWalletSwitched={handleWalletSwitched} />
       </div>
     );
   }
@@ -207,9 +216,9 @@ export default function App() {
       )}
       {view === "activity" && <Activity transactions={transactions} onTxClick={setSelectedTxid} />}
       {view === "addresses" && <Addresses />}
-      {view === "settings" && <Settings />}
+      {view === "settings" && <Settings onWalletImported={handleWalletSwitched} />}
 
-      <RightPanel address={address} balance={balance} nodeHeight={nodeHeight} peers={peers} onNavigate={setView} />
+      <RightPanel address={address} balance={balance} nodeHeight={nodeHeight} peers={peers} onNavigate={setView} onWalletSwitched={handleWalletSwitched} />
     </div>
   );
 }

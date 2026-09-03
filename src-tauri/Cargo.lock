@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "civicnet-wallet"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "rand",
@@ -523,6 +523,8 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-shell",
+ "tokio",
+ "win32job",
 ]
 
 [[package]]
@@ -4997,6 +4999,16 @@ dependencies = [
  "thiserror 2.0.20",
  "windows",
  "windows-core 0.61.2",
+]
+
+[[package]]
+name = "win32job"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c6a6724ccfbf34154a8691bd868b0fcd2be2ca3f7b47b32614654f1a01b191c"
+dependencies = [
+ "thiserror 1.0.69",
+ "windows",
 ]
 
 [[package]]
