@@ -1,8 +1,17 @@
 import { useState } from "react";
 import { Lock, Unlock, ShieldCheck, Zap, Coins } from "lucide-react";
 
+interface WalletTx {
+  txid: string;
+  category: string;
+  amount: number;
+  address?: string;
+  time: number;
+}
+
 interface StakingProps {
   balance: number;
+  transactions: WalletTx[];
   stakingUnlocked: boolean;
   walletEncrypted: boolean;
   onUnlockStaking: (passphrase: string, stakingOnly: boolean) => Promise<void>;
@@ -12,6 +21,7 @@ interface StakingProps {
 
 export default function Staking({
   balance,
+  transactions,
   stakingUnlocked,
   walletEncrypted,
   onUnlockStaking,
@@ -24,6 +34,22 @@ export default function Staking({
   const [stakingOnly, setStakingOnly] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  const stakingRewards = transactions
+    .filter((tx) => tx.category === "stake" && tx.amount > 0)
+    .sort((a, b) => b.time - a.time);
+
+  const totalStakingRewards = stakingRewards.reduce(
+    (total, tx) => total + tx.amount,
+    0
+  );
+
+  const lastSuccessfulStake = stakingRewards[0];
+  const recentStakingRewards = stakingRewards.slice(0, 20);
+
+  function formatStakeTime(timestamp: number) {
+    return new Date(timestamp * 1000).toLocaleString();
+  }
 
   async function submit() {
     if (!passphrase) return;
@@ -198,6 +224,90 @@ export default function Staking({
           >
             <Lock size={16} /> Lock Wallet
           </button>
+        )}
+      </div>
+
+      <div className="mb-6 grid max-w-2xl grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="rounded-2xl border border-white/5 bg-[#111726] p-5">
+          <div className="mb-1 text-sm text-slate-400">Total Staking Rewards</div>
+          <div className="text-xl font-semibold text-emerald-400">
+            +{totalStakingRewards.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 8,
+            })}{" "}
+            <span className="text-sm font-normal text-blue-400">CIVIC</span>
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            {stakingRewards.length} successful stake{stakingRewards.length === 1 ? "" : "s"}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-white/5 bg-[#111726] p-5">
+          <div className="mb-1 text-sm text-slate-400">Last Successful Stake</div>
+          {lastSuccessfulStake ? (
+            <>
+              <div className="text-xl font-semibold text-white">
+                +{lastSuccessfulStake.amount.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 8,
+                })}{" "}
+                <span className="text-sm font-normal text-blue-400">CIVIC</span>
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                {formatStakeTime(lastSuccessfulStake.time)}
+              </div>
+            </>
+          ) : (
+            <div className="text-sm text-slate-500">No staking rewards yet</div>
+          )}
+        </div>
+      </div>
+
+      <div className="mb-6 max-w-2xl overflow-hidden rounded-2xl border border-white/5 bg-[#111726]">
+        <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
+          <div>
+            <h2 className="text-sm font-medium text-white">Staking Reward History</h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Proof-of-Stake block rewards earned by this wallet
+            </p>
+          </div>
+          {stakingRewards.length > 20 && (
+            <span className="text-xs text-slate-500">
+              Latest 20 of {stakingRewards.length}
+            </span>
+          )}
+        </div>
+
+        {recentStakingRewards.length === 0 ? (
+          <div className="px-5 py-8 text-center text-sm text-slate-500">
+            No staking rewards yet
+          </div>
+        ) : (
+          <div className="max-h-80 overflow-y-auto">
+            {recentStakingRewards.map((tx) => (
+              <div
+                key={tx.txid}
+                className="flex items-center justify-between border-b border-white/5 px-5 py-3 last:border-0"
+              >
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-white">Staking Reward</div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    {formatStakeTime(tx.time)}
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[11px] text-slate-600">
+                    {tx.txid}
+                  </div>
+                </div>
+
+                <div className="ml-4 shrink-0 text-sm font-semibold text-emerald-400">
+                  +{tx.amount.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 8,
+                  })} CIVIC
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 

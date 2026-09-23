@@ -16,10 +16,17 @@ function formatDate(unixSeconds: number): string {
 }
 
 function TxRow({ tx, onClick }: { tx: WalletTx; onClick: () => void }) {
-  const isReceive = tx.category === "receive" || tx.category === "generate" || tx.category === "immature";
+  const isReceive =
+    tx.category === "receive" ||
+    tx.category === "generate" ||
+    tx.category === "immature" ||
+    tx.category === "stake";
+
   const label =
-    tx.category === "generate" || tx.category === "immature"
-      ? "Staking / Mining Reward"
+    tx.category === "stake"
+      ? "Staking Reward"
+      : tx.category === "generate" || tx.category === "immature"
+      ? "Mining Reward"
       : isReceive
       ? "Received"
       : tx.category === "send"

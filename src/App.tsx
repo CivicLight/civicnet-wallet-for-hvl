@@ -42,7 +42,9 @@ export default function App() {
       const bal = await invoke<number>("wallet_get_balance");
       setBalance(bal);
 
-      const txs = await invoke<any[]>("wallet_list_transactions", { count: 20 });
+      // Backend paginates listtransactions until the wallet's complete
+      // history has been loaded. Overview applies its own 5-entry display limit.
+      const txs = await invoke<any[]>("wallet_list_transactions");
       setTransactions(
         txs.map((t) => ({
           txid: t.txid,
@@ -192,7 +194,7 @@ export default function App() {
           transactions={transactions}
           onNavigate={setView}
           address={address}
-          stakingUnlocked={lockStatus.unlocked && lockStatus.staking_only}
+          stakingUnlocked={lockStatus.unlocked}
           walletEncrypted={lockStatus.encrypted}
           onUnlockStaking={handleUnlockStaking}
           onLockWallet={handleLockWallet}
@@ -207,7 +209,8 @@ export default function App() {
       {view === "staking" && (
         <Staking
           balance={balance}
-          stakingUnlocked={lockStatus.unlocked && lockStatus.staking_only}
+          transactions={transactions}
+          stakingUnlocked={lockStatus.unlocked}
           walletEncrypted={lockStatus.encrypted}
           onUnlockStaking={handleUnlockStaking}
           onLockWallet={handleLockWallet}

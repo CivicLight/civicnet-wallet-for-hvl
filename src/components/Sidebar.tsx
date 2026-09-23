@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Home, Send, Download, Package, Plus, Layers, List, BookUser, Settings } from "lucide-react";
 import civicLogo from "../assets/civic-logo.png";
 
@@ -52,13 +54,13 @@ function NavButton({
   return (
     <button
       onClick={() => onNavigate(view)}
-      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
         active
           ? "bg-blue-600/15 text-blue-400"
           : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
       }`}
     >
-      <Icon size={18} />
+      <Icon size={16} strokeWidth={1.8} />
       <span className="flex-1 text-left">{label}</span>
       {badge && (
         <span className="rounded-full bg-blue-600/20 px-2 py-0.5 text-[10px] font-semibold text-blue-400">
@@ -70,11 +72,19 @@ function NavButton({
 }
 
 export default function Sidebar({ active, onNavigate, nodeHeight, nodeConnected }: SidebarProps) {
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    invoke<string>("get_app_version")
+      .then(setVersion)
+      .catch(() => {});
+  }, []);
+
   return (
     <aside className="flex h-full w-60 flex-col border-r border-white/5 bg-[#0d1220] px-3 py-4">
       <div className="mb-6 flex items-center gap-2 px-2">
         <img src={civicLogo} alt="CivicNet" className="h-8 w-8 rounded-lg object-cover" />
-        <span className="text-[15px] font-semibold text-white">CivicNet Wallet</span>
+        <span className="text-[14px] font-semibold text-white">CivicNet Wallet</span>
       </div>
 
       <nav className="flex flex-col gap-1">
@@ -101,7 +111,9 @@ export default function Sidebar({ active, onNavigate, nodeHeight, nodeConnected 
         <div className="flex items-center gap-1.5">
           <span className={`h-1.5 w-1.5 rounded-full ${nodeConnected ? "bg-emerald-400" : "bg-red-400"}`} />
           <span className="text-slate-300">{nodeConnected ? "Connected" : "Disconnected"}</span>
-          <span className="ml-auto text-slate-500">v0.1.0</span>
+          <span className="ml-auto text-slate-500">
+            {version ? `v${version}` : "—"}
+          </span>
         </div>
         {nodeConnected && (
           <span className="text-slate-500">Block {nodeHeight.toLocaleString()}</span>

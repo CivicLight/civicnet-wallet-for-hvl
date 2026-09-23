@@ -20,13 +20,28 @@ interface TokenBalance {
   symbol: string;
   name: string;
   decimals: number;
-  amount: number;
+  amount: string;
   metadataUri?: string;
 }
 
-function formatTokenAmount(amount: number, decimals: number): string {
-  const divisor = Math.pow(10, decimals);
-  return (amount / divisor).toLocaleString(undefined, { maximumFractionDigits: decimals });
+function formatTokenAmount(amount: string, decimals: number): string {
+  const raw = BigInt(amount || "0");
+  const scale = 10n ** BigInt(decimals);
+  const whole = raw / scale;
+  const fraction = raw % scale;
+
+  const wholeFormatted = whole.toLocaleString();
+
+  if (decimals === 0 || fraction === 0n) {
+    return wholeFormatted;
+  }
+
+  const fractionText = fraction
+    .toString()
+    .padStart(decimals, "0")
+    .replace(/0+$/, "");
+
+  return `${wholeFormatted}.${fractionText}`;
 }
 
 export default function RightPanel({ address, balance, nodeHeight, peers, onNavigate, onWalletSwitched }: RightPanelProps) {

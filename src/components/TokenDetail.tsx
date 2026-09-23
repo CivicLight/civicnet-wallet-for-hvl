@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowLeft, Layers, ImagePlus, X, Sparkles, Send, Undo2, Check, Coins, Flame } from "lucide-react";
+import { ArrowLeft, Layers, ImagePlus, X, Sparkles, Send, Undo2, Check, Coins, Flame, Shield, KeyRound, LockKeyhole } from "lucide-react";
 import { fetchTokenImageUrl } from "../lib/tokenMetadata";
 
 interface TokenDetailProps {
   tokenId: string;
-  amount: number;
+  amount: string;
   onBack: () => void;
 }
 
@@ -17,19 +17,83 @@ interface TokenInfo {
   type: string;
   capped: boolean;
   decimals: number;
-  initialSupply: number;
-  currentSupply: number;
+  initialSupply: string;
+  currentSupply: string;
   initialReserveLocked: number;
   currentReserveLocked: number;
   issuerAddress: string;
   issueHeight: number;
   issueTxid: string;
-  supplyCap?: number;
+  supplyCap?: string;
+
+  mintAuthorityAddress?: string | null;
+  mintAuthorityTransferred?: boolean;
+  mintAuthorityActive?: boolean;
+  mintAuthorityRelinquished?: boolean;
+  mintAuthorityTransferLocked?: boolean;
+  mintAuthorityTransferCount?: number;
+  mintRelinquishTxid?: string | null;
+  mintRelinquishHeight?: number | null;
+
+  metadataAuthorityAddress?: string | null;
+  metadataAuthorityTransferred?: boolean;
+  metadataAuthorityActive?: boolean;
+  metadataImmutable?: boolean;
+  metadataAuthorityTransferLocked?: boolean;
+  metadataAuthorityTransferCount?: number;
+  metadataImmutableTxid?: string | null;
+  metadataImmutableHeight?: number | null;
 }
 
-function formatAmount(amount: number, decimals: number): string {
-  const divisor = Math.pow(10, decimals);
-  return (amount / divisor).toLocaleString(undefined, { maximumFractionDigits: decimals });
+function formatAmount(amount: string, decimals: number): string {
+  const raw = BigInt(amount || "0");
+  const scale = 10n ** BigInt(decimals);
+  const whole = raw / scale;
+  const fraction = raw % scale;
+
+  const wholeFormatted = whole.toLocaleString();
+
+  if (decimals === 0 || fraction === 0n) {
+    return wholeFormatted;
+  }
+
+  const fractionText = fraction
+    .toString()
+    .padStart(decimals, "0")
+    .replace(/0+$/, "");
+
+  return `${wholeFormatted}.${fractionText}`;
+}
+
+function decimalToRawUnits(value: string, decimals: number): string {
+  const trimmed = value.trim();
+
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error("Enter a valid token amount");
+  }
+
+  const [wholePart, fractionPart = ""] = trimmed.split(".");
+
+  if (fractionPart.length > decimals) {
+    throw new Error(
+      `This token supports at most ${decimals} decimal place${decimals === 1 ? "" : "s"}`
+    );
+  }
+
+  const scale = 10n ** BigInt(decimals);
+  const whole = BigInt(wholePart);
+  const fraction =
+    decimals === 0
+      ? 0n
+      : BigInt(fractionPart.padEnd(decimals, "0") || "0");
+
+  const raw = whole * scale + fraction;
+
+  if (raw <= 0n) {
+    throw new Error("Amount must be greater than zero");
+  }
+
+  return raw.toString();
 }
 
 export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProps) {
@@ -73,6 +137,32 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
   const [burnError, setBurnError] = useState("");
   const [burnTxid, setBurnTxid] = useState("");
 
+  const [authorityBusy, setAuthorityBusy] = useState(false);
+  const [authorityError, setAuthorityError] = useState("");
+  const [authoritySuccess, setAuthoritySuccess] = useState("");
+  const [authorityRole, setAuthorityRole] = useState<"mint" | "metadata" | null>(null);
+  const [newAuthorityAddress, setNewAuthorityAddress] = useState("");
+
+  const authorityV2Available =
+    !!info &&
+    typeof info.mintAuthorityTransferLocked === "boolean" &&
+    typeof info.metadataAuthorityTransferLocked === "boolean" &&
+    typeof info.metadataImmutable === "boolean";
+
+  const ownerMintTerminal =
+    !!info &&
+    (!info.capped ||
+      info.mintAuthorityActive === false ||
+      info.mintAuthorityRelinquished === true);
+
+  const ownerMetadataTerminal =
+    !!info && info.metadataImmutable === true;
+
+  const ownerRenounceComplete =
+    authorityV2Available &&
+    ownerMintTerminal &&
+    ownerMetadataTerminal;
+
   function loadInfo() {
     invoke<TokenInfo>("wallet_get_token_info", { tokenId })
       .then((data) => {
@@ -107,8 +197,7 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
     setSendError("");
     setSendTxid("");
     try {
-      const scale = Math.pow(10, info.decimals);
-      const rawAmount = Math.round(parseFloat(sendAmount) * scale);
+      const rawAmount = decimalToRawUnits(sendAmount, info.decimals);
       const txid = await invoke<string>("wallet_transfer_token", {
         tokenId,
         toAddress: sendAddress.trim(),
@@ -131,8 +220,7 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
     setRedeemError("");
     setRedeemTxid("");
     try {
-      const scale = Math.pow(10, info.decimals);
-      const rawAmount = Math.round(parseFloat(redeemAmount) * scale);
+      const rawAmount = decimalToRawUnits(redeemAmount, info.decimals);
       const txid = await invoke<string>("wallet_convert_token", {
         tokenId,
         amountToBurn: rawAmount,
@@ -153,8 +241,7 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
     setMintError("");
     setMintTxid("");
     try {
-      const scale = Math.pow(10, info.decimals);
-      const rawAmount = Math.round(parseFloat(mintAmount) * scale);
+      const rawAmount = decimalToRawUnits(mintAmount, info.decimals);
       const txid = await invoke<string>("wallet_mint_token", {
         tokenId,
         amountToMint: rawAmount,
@@ -175,8 +262,7 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
     setBurnError("");
     setBurnTxid("");
     try {
-      const scale = Math.pow(10, info.decimals);
-      const rawAmount = Math.round(parseFloat(burnAmount) * scale);
+      const rawAmount = decimalToRawUnits(burnAmount, info.decimals);
       const txid = await invoke<string>("wallet_burn_token", {
         tokenId,
         amountToBurn: rawAmount,
@@ -188,6 +274,182 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
       setBurnError(String(e).replace(/^RPC error:\s*/, ""));
     } finally {
       setBurnBusy(false);
+    }
+  }
+
+  async function handleTransferAuthority() {
+    if (!authorityRole || !newAuthorityAddress.trim()) return;
+
+    setAuthorityBusy(true);
+    setAuthorityError("");
+    setAuthoritySuccess("");
+
+    try {
+      const txid = await invoke<string>("wallet_transfer_token_authority", {
+        tokenId,
+        role: authorityRole,
+        newAuthorityAddress: newAuthorityAddress.trim(),
+      });
+
+      setAuthoritySuccess(
+        `${authorityRole === "mint" ? "Mint" : "Metadata"} authority transfer submitted: ${txid.slice(0, 10)}...${txid.slice(-8)}`
+      );
+
+      setAuthorityRole(null);
+      setNewAuthorityAddress("");
+      loadInfo();
+    } catch (e: any) {
+      setAuthorityError(String(e).replace(/^RPC error:\s*/, ""));
+    } finally {
+      setAuthorityBusy(false);
+    }
+  }
+
+  async function handleRelinquishMintAuthority() {
+    if (!confirm(
+      "Permanently relinquish mint authority? This cannot be reversed and no further minting will ever be possible."
+    )) {
+      return;
+    }
+
+    setAuthorityBusy(true);
+    setAuthorityError("");
+    setAuthoritySuccess("");
+
+    try {
+      const txid = await invoke<string>("wallet_relinquish_mint_authority", {
+        tokenId,
+      });
+
+      setAuthoritySuccess(
+        `Mint authority relinquish submitted: ${txid.slice(0, 10)}...${txid.slice(-8)}`
+      );
+
+      loadInfo();
+    } catch (e: any) {
+      setAuthorityError(String(e).replace(/^RPC error:\s*/, ""));
+    } finally {
+      setAuthorityBusy(false);
+    }
+  }
+
+  async function handleMakeMetadataImmutable() {
+    if (!confirm(
+      "Permanently make this token's metadata immutable? Its metadata can never be changed again."
+    )) {
+      return;
+    }
+
+    setAuthorityBusy(true);
+    setAuthorityError("");
+    setAuthoritySuccess("");
+
+    try {
+      const txid = await invoke<string>("wallet_make_metadata_immutable", {
+        tokenId,
+      });
+
+      setAuthoritySuccess(
+        `Metadata immutable transaction submitted: ${txid.slice(0, 10)}...${txid.slice(-8)}`
+      );
+
+      loadInfo();
+    } catch (e: any) {
+      setAuthorityError(String(e).replace(/^RPC error:\s*/, ""));
+    } finally {
+      setAuthorityBusy(false);
+    }
+  }
+
+  async function handleOwnerRenounceNextStep() {
+    if (!info || !authorityV2Available) {
+      setAuthorityError(
+        "Authority v2 controls require CivicNet Core v3.0.8."
+      );
+      return;
+    }
+
+    if (ownerRenounceComplete) {
+      setAuthoritySuccess(
+        "Owner Renounce is already complete: mint control is terminal and metadata is immutable."
+      );
+      return;
+    }
+
+    setAuthorityError("");
+    setAuthoritySuccess("");
+
+    // Mint terminalization is performed first. Metadata immutable is a
+    // separate protocol transaction and is intentionally not chained in the
+    // same click; the first transaction should confirm before continuing.
+    const needsMintTerminal =
+      info.capped &&
+      info.mintAuthorityActive === true &&
+      info.mintAuthorityRelinquished !== true;
+
+    if (needsMintTerminal) {
+      if (!confirm(
+        "Owner Renounce step 1 will permanently end this token's active mint authority. This cannot be reversed. Continue?"
+      )) {
+        return;
+      }
+
+      setAuthorityBusy(true);
+
+      try {
+        const txid = await invoke<string>(
+          "wallet_relinquish_mint_authority",
+          { tokenId }
+        );
+
+        setAuthoritySuccess(
+          `Owner Renounce step submitted: mint authority relinquish ${txid.slice(0, 10)}...${txid.slice(-8)}. Wait for confirmation, then continue Owner Renounce to finalize metadata control.`
+        );
+      } catch (e: any) {
+        setAuthorityError(
+          String(e).replace(/^RPC error:\s*/, "")
+        );
+      } finally {
+        setAuthorityBusy(false);
+      }
+
+      return;
+    }
+
+    // If mint capability is already naturally/explicitly terminal, metadata
+    // immutable is the remaining Owner Renounce step.
+    if (!ownerMetadataTerminal) {
+      if (!hasMetadata) {
+        setAuthorityError(
+          "Owner Renounce cannot finalize metadata control yet. Attach metadata first, then make it permanently immutable."
+        );
+        return;
+      }
+
+      if (!confirm(
+        "Owner Renounce final step will permanently make this token's metadata immutable. It can never be edited again. Continue?"
+      )) {
+        return;
+      }
+
+      setAuthorityBusy(true);
+
+      try {
+        const txid = await invoke<string>(
+          "wallet_make_metadata_immutable",
+          { tokenId }
+        );
+
+        setAuthoritySuccess(
+          `Owner Renounce final step submitted: metadata immutable ${txid.slice(0, 10)}...${txid.slice(-8)}. It will be complete after confirmation.`
+        );
+      } catch (e: any) {
+        setAuthorityError(
+          String(e).replace(/^RPC error:\s*/, "")
+        );
+      } finally {
+        setAuthorityBusy(false);
+      }
     }
   }
 
@@ -271,7 +533,8 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
               {info.capped && (
                 <button
                   onClick={() => setShowMint(true)}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-white/5 py-2 text-sm font-medium text-slate-200 hover:bg-white/10"
+                  disabled={info.mintAuthorityActive === false}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-white/5 py-2 text-sm font-medium text-slate-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Coins size={14} /> Mint
                 </button>
@@ -316,7 +579,13 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
               )}
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Mintable</span>
-                <span className="text-slate-200">{info.capped ? "Yes (issuer-controlled)" : "No, fixed supply"}</span>
+                <span className="text-slate-200">
+                  {!info.capped
+                    ? "No, fixed supply"
+                    : info.mintAuthorityActive === false
+                      ? "No, authority ended"
+                      : "Yes"}
+                </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Reserve Locked</span>
@@ -335,6 +604,350 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
                 <span className="text-slate-200">{info.issueHeight.toLocaleString()}</span>
               </div>
             </div>
+          </div>
+
+          <div className="mt-4 max-w-2xl rounded-2xl border border-white/5 bg-[#111726] p-5">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Shield size={15} className="text-blue-400" />
+                  <h2 className="text-sm font-medium text-white">
+                    Authority & Control
+                  </h2>
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  Current operational control and permanent protocol commitments.
+                </p>
+              </div>
+            </div>
+
+            {!authorityV2Available && (
+              <div className="mb-4 rounded-xl border border-amber-500/15 bg-amber-500/[0.06] px-4 py-3">
+                <div className="text-xs font-medium text-amber-300">
+                  Authority v2 data unavailable
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed text-amber-200/60">
+                  This wallet is not receiving CivicNet v3.0.8 authority fields
+                  from the running Core. Authority actions are disabled until
+                  Core v3.0.8 is used.
+                </p>
+              </div>
+            )}
+
+            <div className={`grid grid-cols-2 gap-3 ${
+              !authorityV2Available ? "pointer-events-none opacity-50" : ""
+            }`}>
+              <div className="rounded-xl border border-white/5 bg-black/10 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <KeyRound size={14} className="text-slate-400" />
+                  <span className="text-xs font-medium text-slate-300">
+                    Mint Authority
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-500">Status</span>
+                    <span className={
+                      info.capped && info.mintAuthorityActive !== false
+                        ? "text-emerald-400"
+                        : "text-slate-400"
+                    }>
+                      {!info.capped
+                        ? "Not applicable"
+                        : info.mintAuthorityRelinquished
+                          ? "Relinquished"
+                          : info.mintAuthorityActive === false
+                            ? "Inactive"
+                            : "Active"}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-500">Transfer</span>
+                    <span className={
+                      info.mintAuthorityTransferLocked
+                        ? "text-amber-300"
+                        : "text-slate-300"
+                    }>
+                      {info.mintAuthorityTransferLocked
+                        ? "Permanently locked"
+                        : "Allowed"}
+                    </span>
+                  </div>
+
+                  {info.mintAuthorityAddress && (
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-500">Controller</span>
+                      <span className="font-mono text-slate-300">
+                        {info.mintAuthorityAddress.slice(0, 8)}...
+                        {info.mintAuthorityAddress.slice(-6)}
+                      </span>
+                    </div>
+                  )}
+
+                  {typeof info.mintAuthorityTransferCount === "number" && (
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-500">Transfers</span>
+                      <span className="text-slate-300">
+                        {info.mintAuthorityTransferCount}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {info.capped &&
+                  info.mintAuthorityActive !== false && (
+                    <div className="mt-4 grid gap-2">
+                      {!info.mintAuthorityTransferLocked && (
+                        <button
+                          type="button"
+                          disabled={authorityBusy}
+                          onClick={() => {
+                            setAuthorityError("");
+                            setAuthoritySuccess("");
+                            setNewAuthorityAddress("");
+                            setAuthorityRole("mint");
+                          }}
+                          className="rounded-lg bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10 disabled:opacity-40"
+                        >
+                          Transfer Mint Authority
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        disabled={authorityBusy}
+                        onClick={handleRelinquishMintAuthority}
+                        className="rounded-lg border border-red-500/15 bg-red-500/[0.06] px-3 py-2 text-xs font-medium text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+                      >
+                        Relinquish Mint Authority
+                      </button>
+                    </div>
+                  )}
+              </div>
+
+              <div className="rounded-xl border border-white/5 bg-black/10 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <LockKeyhole size={14} className="text-slate-400" />
+                  <span className="text-xs font-medium text-slate-300">
+                    Metadata Authority
+                  </span>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-500">Status</span>
+                    <span className={
+                      info.metadataImmutable
+                        ? "text-slate-400"
+                        : "text-emerald-400"
+                    }>
+                      {info.metadataImmutable ? "Immutable" : "Mutable"}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-500">Transfer</span>
+                    <span className={
+                      info.metadataAuthorityTransferLocked
+                        ? "text-amber-300"
+                        : "text-slate-300"
+                    }>
+                      {info.metadataAuthorityTransferLocked
+                        ? "Permanently locked"
+                        : "Allowed"}
+                    </span>
+                  </div>
+
+                  {info.metadataAuthorityAddress && (
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-500">Controller</span>
+                      <span className="font-mono text-slate-300">
+                        {info.metadataAuthorityAddress.slice(0, 8)}...
+                        {info.metadataAuthorityAddress.slice(-6)}
+                      </span>
+                    </div>
+                  )}
+
+                  {typeof info.metadataAuthorityTransferCount === "number" && (
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-500">Transfers</span>
+                      <span className="text-slate-300">
+                        {info.metadataAuthorityTransferCount}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {!info.metadataImmutable && (
+                  <div className="mt-4 grid gap-2">
+                    {!info.metadataAuthorityTransferLocked && (
+                      <button
+                        type="button"
+                        disabled={authorityBusy}
+                        onClick={() => {
+                          setAuthorityError("");
+                          setAuthoritySuccess("");
+                          setNewAuthorityAddress("");
+                          setAuthorityRole("metadata");
+                        }}
+                        className="rounded-lg bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10 disabled:opacity-40"
+                      >
+                        Transfer Metadata Authority
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={authorityBusy || !hasMetadata}
+                      onClick={handleMakeMetadataImmutable}
+                      className="rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2 text-xs font-medium text-amber-300 hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Make Metadata Immutable
+                    </button>
+
+                    {!hasMetadata && (
+                      <p className="text-[11px] leading-relaxed text-slate-600">
+                        Attach metadata first before permanently making it immutable.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-white/5 bg-black/10 px-4 py-3">
+              <div className="text-xs font-medium text-slate-300">
+                Risk & Control Manifest
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-2 text-[11px]">
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-600">Mint authority</span>
+                  <span className="text-slate-400">
+                    {!info.capped
+                      ? "None"
+                      : info.mintAuthorityActive === false
+                        ? "Terminal"
+                        : "Active"}
+                  </span>
+                </div>
+
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-600">Metadata</span>
+                  <span className="text-slate-400">
+                    {info.metadataImmutable ? "Immutable" : "Mutable"}
+                  </span>
+                </div>
+
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-600">Mint transfer</span>
+                  <span className="text-slate-400">
+                    {info.mintAuthorityTransferLocked ? "Locked" : "Not locked"}
+                  </span>
+                </div>
+
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-600">Metadata transfer</span>
+                  <span className="text-slate-400">
+                    {info.metadataAuthorityTransferLocked ? "Locked" : "Not locked"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-white/5 bg-black/10 p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-medium text-slate-300">
+                    <LockKeyhole size={13} />
+                    Owner Renounce
+                  </div>
+
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
+                    Composite wallet action that terminalizes remaining creator
+                    controls. It does not create a separate protocol owner role.
+                  </p>
+                </div>
+
+                {ownerRenounceComplete && (
+                  <div className="flex items-center gap-1 rounded-lg bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-400">
+                    <Check size={11} />
+                    Complete
+                  </div>
+                )}
+              </div>
+
+              {authorityV2Available && (
+                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="flex items-center justify-between rounded-lg bg-white/[0.025] px-3 py-2">
+                    <span className="text-slate-600">Mint control</span>
+                    <span className={
+                      ownerMintTerminal
+                        ? "text-emerald-400"
+                        : "text-amber-300"
+                    }>
+                      {ownerMintTerminal ? "Terminal" : "Action required"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between rounded-lg bg-white/[0.025] px-3 py-2">
+                    <span className="text-slate-600">Metadata</span>
+                    <span className={
+                      ownerMetadataTerminal
+                        ? "text-emerald-400"
+                        : "text-amber-300"
+                    }>
+                      {ownerMetadataTerminal
+                        ? "Immutable"
+                        : hasMetadata
+                          ? "Action required"
+                          : "Metadata required"}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleOwnerRenounceNextStep}
+                disabled={
+                  authorityBusy ||
+                  !authorityV2Available ||
+                  ownerRenounceComplete
+                }
+                className="mt-3 w-full rounded-lg border border-red-500/15 bg-red-500/[0.06] px-3 py-2 text-xs font-medium text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {ownerRenounceComplete
+                  ? "Owner Renounce Complete"
+                  : authorityBusy
+                    ? "Submitting..."
+                    : "Continue Owner Renounce"}
+              </button>
+
+              {authorityV2Available &&
+                !ownerRenounceComplete &&
+                ownerMintTerminal &&
+                !ownerMetadataTerminal &&
+                !hasMetadata && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-slate-600">
+                    Attach metadata first before the metadata authority can be
+                    permanently finalized.
+                  </p>
+                )}
+            </div>
+
+            {authorityError && (
+              <div className="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                {authorityError}
+              </div>
+            )}
+
+            {authoritySuccess && (
+              <div className="mt-3 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">
+                {authoritySuccess}
+              </div>
+            )}
           </div>
 
           {!hasMetadata && (
@@ -414,6 +1027,62 @@ export default function TokenDetail({ tokenId, amount, onBack }: TokenDetailProp
             </div>
           )}
         </>
+      )}
+
+      {authorityRole && info && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#151b2c] p-5">
+            <div className="mb-3 flex items-center gap-2 text-white">
+              <KeyRound size={16} />
+              <span className="text-sm font-semibold">
+                Transfer {authorityRole === "mint" ? "Mint" : "Metadata"} Authority
+              </span>
+            </div>
+
+            <p className="mb-3 text-xs leading-relaxed text-slate-400">
+              The destination address becomes the new operational controller.
+              The historical issuer does not change.
+            </p>
+
+            <input
+              type="text"
+              value={newAuthorityAddress}
+              onChange={(e) => setNewAuthorityAddress(e.target.value)}
+              placeholder="New authority address"
+              className="mb-3 w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white placeholder-slate-600 outline-none focus:border-blue-500"
+            />
+
+            {authorityError && (
+              <div className="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                {authorityError}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleTransferAuthority}
+                disabled={authorityBusy || !newAuthorityAddress.trim()}
+                className="flex-1 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              >
+                {authorityBusy ? "Submitting..." : "Transfer"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthorityRole(null);
+                  setNewAuthorityAddress("");
+                  setAuthorityError("");
+                }}
+                disabled={authorityBusy}
+                className="flex-1 rounded-lg bg-white/5 py-2 text-sm text-slate-300 hover:bg-white/10 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showSend && info && (

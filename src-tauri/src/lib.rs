@@ -126,13 +126,41 @@ fn start_node(app: tauri::AppHandle, state: tauri::State<NodeProcess>) -> Result
     }
     let creds = get_or_create_creds(&app)?;
     let conf_path = write_node_conf(&app, &creds)?;
+
+    // v3.0.8 migration:
+    // Existing datadirs created by an older wallet release must be reindexed
+    // once so the new token/HVL state is rebuilt from historical blocks.
+    // Fresh installs already build the databases from scratch and therefore
+    // must not be forced through an unnecessary reindex.
+    //
+    // Core persists an in-progress full reindex in the block DB itself, so
+    // after this migration has been initiated we must NOT keep passing
+    // -reindex on every wallet startup.
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let existing_datadir = config_dir.join("nodedata").exists();
+    let v308_migration_marker = config_dir.join(".v308_reindex_migrated");
+    let needs_v308_reindex = existing_datadir && !v308_migration_marker.exists();
+
     let datadir = get_datadir(&app)?;
     let sidecar = app.shell().sidecar("civicnet-node").map_err(|e| e.to_string())?;
     let conf_arg = format!("-conf={}", conf_path.to_string_lossy());
     let datadir_arg = format!("-datadir={}", datadir.to_string_lossy());
+
+    let mut node_args = vec![conf_arg, datadir_arg, "-txindex".to_string()];
+    if needs_v308_reindex {
+        node_args.push("-reindex".to_string());
+    }
+
     let (mut rx, child) = sidecar
-        .args([conf_arg.as_str(), datadir_arg.as_str(), "-txindex"])
+        .args(node_args)
         .spawn()
+        .map_err(|e| e.to_string())?;
+
+    // Mark both successful migration initiation and fresh v3.0.8 datadirs.
+    // This prevents a fresh install from being mistaken for an old install
+    // on its second launch.
+    fs::write(&v308_migration_marker, b"v3.0.8\n")
         .map_err(|e| e.to_string())?;
     let terminated = Arc::new(tokio::sync::Notify::new());
     let terminated_bg = terminated.clone();
@@ -223,9 +251,46 @@ async fn wallet_get_new_address(app: tauri::AppHandle) -> Result<String, String>
 }
 
 #[tauri::command]
-async fn wallet_list_transactions(app: tauri::AppHandle, count: i64) -> Result<Value, String> {
+async fn wallet_list_transactions(app: tauri::AppHandle) -> Result<Value, String> {
     let creds = get_or_create_creds(&app)?;
-    rpc_call_wallet(&creds, "listtransactions", serde_json::json!(["*", count])).await
+
+    const BATCH_SIZE: i64 = 1000;
+    let mut skip: i64 = 0;
+    let mut batches: Vec<Vec<Value>> = Vec::new();
+
+    loop {
+        let result = rpc_call_wallet(
+            &creds,
+            "listtransactions",
+            serde_json::json!(["*", BATCH_SIZE, skip]),
+        )
+        .await?;
+
+        let batch = result
+            .as_array()
+            .ok_or_else(|| "listtransactions returned a non-array result".to_string())?
+            .clone();
+
+        let batch_len = batch.len();
+        batches.push(batch);
+
+        if batch_len < BATCH_SIZE as usize {
+            break;
+        }
+
+        skip += BATCH_SIZE;
+    }
+
+    // listtransactions returns each requested slice oldest -> newest, while
+    // increasing `skip` walks from newer slices toward older ones.
+    // Reassemble the slices oldest -> newest so callers retain the same
+    // ordering semantics as one ordinary listtransactions call.
+    let mut transactions = Vec::new();
+    for batch in batches.into_iter().rev() {
+        transactions.extend(batch);
+    }
+
+    Ok(Value::Array(transactions))
 }
 
 #[tauri::command]
@@ -391,7 +456,7 @@ struct TokenBalance {
     symbol: String,
     name: String,
     decimals: i64,
-    amount: u64,
+    amount: String,
     metadata_uri: Option<String>,
 }
 
@@ -567,12 +632,28 @@ async fn wallet_update_token_metadata(
     let creds = get_or_create_creds(&app)?;
 
     let info = rpc_call(&creds, "gettokeninfo", serde_json::json!([token_id])).await?;
-    let issuer_address = info["issuerAddress"].as_str().ok_or("Token has no issuer address on record")?;
 
-    let unspent = rpc_call_wallet(&creds, "listunspent", serde_json::json!([1, 9999999, [issuer_address]])).await?;
+    if info["metadataImmutable"].as_bool().unwrap_or(false) {
+        return Err("Token metadata is permanently immutable".to_string());
+    }
+
+    let authority_address = info["metadataAuthorityAddress"]
+        .as_str()
+        .ok_or("Token has no usable metadata authority address")?
+        .to_string();
+
+    let unspent = rpc_call_wallet(
+        &creds,
+        "listunspent",
+        serde_json::json!([1, 9999999, [authority_address.clone()]])
+    ).await?;
+
     let utxos = unspent.as_array().ok_or("listunspent returned unexpected shape")?;
     let clean_utxos = filter_out_token_utxos(&creds, utxos).await?;
-    let first = clean_utxos.iter().find(|u| u["spendable"].as_bool().unwrap_or(false)).ok_or("No spendable pure-CIVIC funds at the issuer address to authorize this update (only token-colored or unspendable UTXOs found)")?;
+    let first = clean_utxos
+        .iter()
+        .find(|u| u["spendable"].as_bool().unwrap_or(false))
+        .ok_or("No spendable pure-CIVIC funds at the current metadata authority address")?;
     let txid = first["txid"].as_str().ok_or("Invalid UTXO txid")?;
     let vout = first["vout"].as_i64().ok_or("Invalid UTXO vout")?;
 
@@ -589,7 +670,7 @@ async fn wallet_update_token_metadata(
     // one -- otherwise this address is drained again by this very tx, and
     // the NEXT issuer action (mint, another metadata update) fails the same
     // way this one almost did.
-    let funded = rpc_call_wallet(&creds, "fundrawtransaction", serde_json::json!([raw_tx, { "changeAddress": issuer_address }])).await?;
+    let funded = rpc_call_wallet(&creds, "fundrawtransaction", serde_json::json!([raw_tx, { "changeAddress": authority_address }])).await?;
     let funded_hex = funded["hex"].as_str().ok_or("fundrawtransaction returned unexpected shape")?;
 
     let signed = rpc_call_wallet(&creds, "signrawtransactionwithwallet", serde_json::json!([funded_hex])).await?;
@@ -602,10 +683,71 @@ async fn wallet_update_token_metadata(
         .as_str().map(|s| s.to_string()).ok_or_else(|| "sendrawtransaction returned unexpected shape".to_string())
 }
 
+fn parse_token_u64_value(value: &Value, field: &str) -> Result<u64, String> {
+    if let Some(s) = value.as_str() {
+        return s
+            .parse::<u64>()
+            .map_err(|_| format!("{field} must be a valid unsigned 64-bit integer"));
+    }
+
+    if let Some(n) = value.as_u64() {
+        return Ok(n);
+    }
+
+    Err(format!(
+        "{field} must be a decimal string or unsigned JSON integer"
+    ))
+}
+
+#[tauri::command]
+async fn wallet_get_token_issuance_params(
+    app: tauri::AppHandle,
+) -> Result<Value, String> {
+    let creds = get_or_create_creds(&app)?;
+    rpc_call(
+        &creds,
+        "gettokenissuanceparams",
+        serde_json::json!([]),
+    )
+    .await
+}
+
 #[tauri::command]
 async fn wallet_get_token_info(app: tauri::AppHandle, token_id: String) -> Result<Value, String> {
     let creds = get_or_create_creds(&app)?;
-    rpc_call(&creds, "gettokeninfo", serde_json::json!([token_id])).await
+    let mut info =
+        rpc_call(&creds, "gettokeninfo", serde_json::json!([token_id])).await?;
+
+    // Raw HVL token amounts may exceed JavaScript's exact integer range.
+    // Keep them exact across the Tauri boundary by serializing them as
+    // decimal strings. Non-token monetary fields such as CIVIC reserve
+    // values retain their existing representation.
+    for field in ["initialSupply", "currentSupply", "supplyCap"] {
+        if let Some(value) = info.get(field) {
+            if !value.is_null() {
+                let parsed = parse_token_u64_value(value, field)?;
+                info[field] = serde_json::json!(parsed.to_string());
+            }
+        }
+    }
+
+    if let Some(vesting) = info
+        .get_mut("vesting")
+        .and_then(|v| v.as_object_mut())
+    {
+        if let Some(value) = vesting.get("lockedSupply") {
+            if !value.is_null() {
+                let parsed =
+                    parse_token_u64_value(value, "lockedSupply")?;
+                vesting.insert(
+                    "lockedSupply".to_string(),
+                    serde_json::json!(parsed.to_string()),
+                );
+            }
+        }
+    }
+
+    Ok(info)
 }
 
 #[tauri::command]
@@ -638,8 +780,14 @@ async fn wallet_list_tokens(app: tauri::AppHandle) -> Result<Vec<TokenBalance>, 
             continue;
         }
         let token_id = utxo["tokenid"].as_str().unwrap_or("").to_string();
-        let amount = utxo["amount"].as_u64().unwrap_or(0);
-        *totals.entry(token_id).or_insert(0) += amount;
+        let amount = match parse_token_u64_value(&utxo["amount"], "token UTXO amount") {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let total = totals.entry(token_id).or_insert(0);
+        *total = total
+            .checked_add(amount)
+            .ok_or("Token balance overflow while aggregating wallet UTXOs")?;
     }
 
     let mut result = Vec::new();
@@ -653,7 +801,7 @@ async fn wallet_list_tokens(app: tauri::AppHandle) -> Result<Vec<TokenBalance>, 
             symbol: info.get("symbol").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
             name: info.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
             decimals: info.get("decimals").and_then(|v| v.as_i64()).unwrap_or(0),
-            amount,
+            amount: amount.to_string(),
             metadata_uri: info.get("metadata").and_then(|m| m.get("uri")).and_then(|v| v.as_str()).map(|s| s.to_string()),
         });
     }
@@ -728,12 +876,56 @@ async fn wallet_create_token(
     symbol: String,
     name: String,
     decimals: i64,
-    initial_supply: i64,
-    reserve_lock_amount: f64,
+    initial_supply: String,
     capped: bool,
-    supply_cap: Option<i64>,
+    supply_cap: Option<String>,
+    token_type: Option<String>,
+    vesting_start_height: Option<u32>,
+    vesting_duration_blocks: Option<u32>,
+    vesting_cliff_blocks: Option<u32>,
+    lock_mint_authority_transfer: bool,
+    lock_metadata_authority_transfer: bool,
 ) -> Result<CreateTokenResult, String> {
     let creds = get_or_create_creds(&app)?;
+
+    let initial_supply: u64 = initial_supply
+        .parse()
+        .map_err(|_| "initialSupply must be a valid unsigned integer".to_string())?;
+
+    let supply_cap: Option<u64> = match supply_cap {
+        Some(value) => Some(
+            value
+                .parse()
+                .map_err(|_| "supplyCap must be a valid unsigned integer".to_string())?
+        ),
+        None => None,
+    };
+
+    let token_type = token_type.unwrap_or_else(|| "standard".to_string());
+
+    if token_type != "standard" && token_type != "vesting" {
+        return Err("tokenType must be either standard or vesting".to_string());
+    }
+
+    if token_type == "vesting" {
+        let duration = vesting_duration_blocks.unwrap_or(0);
+        let cliff = vesting_cliff_blocks.unwrap_or(0);
+
+        if duration == 0 {
+            return Err("Vesting duration must be greater than 0 blocks".to_string());
+        }
+
+        if cliff > duration {
+            return Err("Vesting cliff must be less than or equal to duration".to_string());
+        }
+    }
+
+    if lock_mint_authority_transfer && !capped {
+        return Err(
+            "Mint authority transfer can only be locked for capped tokens"
+                .to_string()
+        );
+    }
 
     // Pick a spendable UTXO as the first input -- this fixes the token's ID
     // (hash of this input's outpoint), matching createtokenissuetx's design.
@@ -755,14 +947,27 @@ async fn wallet_create_token(
     let mut token_obj = serde_json::json!({
         "symbol": symbol,
         "name": name,
+        "type": token_type,
         "decimals": decimals,
-        "initialSupply": initial_supply,
-        "reserveLockAmount": reserve_lock_amount,
+        "initialSupply": initial_supply.to_string(),
         "mintAddress": mint_address,
+        "lockMintAuthorityTransfer": lock_mint_authority_transfer,
+        "lockMetadataAuthorityTransfer": lock_metadata_authority_transfer,
     });
+
+    if token_obj["type"] == "vesting" {
+        token_obj["vestingStartHeight"] =
+            serde_json::json!(vesting_start_height.unwrap_or(0));
+        token_obj["vestingDurationBlocks"] =
+            serde_json::json!(vesting_duration_blocks.unwrap_or(0));
+        token_obj["vestingCliffBlocks"] =
+            serde_json::json!(vesting_cliff_blocks.unwrap_or(0));
+    }
+
     if capped {
         token_obj["capped"] = serde_json::json!(true);
-        token_obj["supplyCap"] = serde_json::json!(supply_cap.unwrap_or(initial_supply));
+        token_obj["supplyCap"] =
+            serde_json::json!(supply_cap.unwrap_or(initial_supply).to_string());
     }
 
     let inputs = serde_json::json!([{ "txid": txid, "vout": vout }]);
@@ -796,9 +1001,17 @@ async fn wallet_transfer_token(
     app: tauri::AppHandle,
     token_id: String,
     to_address: String,
-    amount: i64,
+    amount: String,
 ) -> Result<String, String> {
     let creds = get_or_create_creds(&app)?;
+
+    let amount: u64 = amount
+        .parse()
+        .map_err(|_| "Token amount must be a valid unsigned integer".to_string())?;
+
+    if amount == 0 {
+        return Err("Token amount must be greater than zero".to_string());
+    }
     let utxos_val = rpc_call_wallet(&creds, "listtokenunspent", serde_json::json!([token_id])).await?;
     let all_utxos = utxos_val.as_array().ok_or("listtokenunspent returned unexpected shape")?;
     let utxos = filter_owned_token_utxos(&creds, all_utxos).await?;
@@ -810,28 +1023,31 @@ async fn wallet_transfer_token(
     // that may need to authorize a future Mint/Metadata Update (issuer-only
     // actions require a spendable UTXO at the issuer's own address).
     let mut inputs = Vec::new();
-    let mut total: i64 = 0;
+    let mut total: u64 = 0;
     let mut source_address: Option<String> = None;
     for u in &utxos {
         if total >= amount { break; }
         let txid = u["txid"].as_str().ok_or("Invalid token UTXO txid")?;
         let vout = u["vout"].as_i64().ok_or("Invalid token UTXO vout")?;
-        let utxo_amount = u["amount"].as_i64().ok_or("Invalid token UTXO amount")?;
+        let utxo_amount =
+            parse_token_u64_value(&u["amount"], "token UTXO amount")?;
         if source_address.is_none() {
             source_address = u["address"].as_str().map(|s| s.to_string());
         }
         inputs.push(serde_json::json!({ "txid": txid, "vout": vout }));
-        total += utxo_amount;
+        total = total
+            .checked_add(utxo_amount)
+            .ok_or("Token input total overflow")?;
     }
     if total < amount {
         return Err("Not enough token balance to send this amount".to_string());
     }
     let source_address = source_address.ok_or("Could not determine the source address of the selected token UTXOs")?;
 
-    let mut outputs = vec![serde_json::json!({ "address": to_address, "tokenid": token_id, "amount": amount })];
+    let mut outputs = vec![serde_json::json!({ "address": to_address, "tokenid": token_id, "amount": amount.to_string() })];
     let leftover = total - amount;
     if leftover > 0 {
-        outputs.push(serde_json::json!({ "address": source_address, "tokenid": token_id, "amount": leftover }));
+        outputs.push(serde_json::json!({ "address": source_address, "tokenid": token_id, "amount": leftover.to_string() }));
     }
 
     let raw_tx = rpc_call(&creds, "createtokentransfertx", serde_json::json!([inputs, outputs])).await?
@@ -849,25 +1065,55 @@ async fn wallet_transfer_token(
 }
 
 #[tauri::command]
-async fn wallet_mint_token(app: tauri::AppHandle, token_id: String, amount_to_mint: i64) -> Result<String, String> {
+async fn wallet_mint_token(app: tauri::AppHandle, token_id: String, amount_to_mint: String) -> Result<String, String> {
     let creds = get_or_create_creds(&app)?;
+
+    let amount_to_mint: u64 = amount_to_mint
+        .parse()
+        .map_err(|_| "Mint amount must be a valid unsigned integer".to_string())?;
+
+    if amount_to_mint == 0 {
+        return Err("Mint amount must be greater than zero".to_string());
+    }
+
     let info = rpc_call(&creds, "gettokeninfo", serde_json::json!([token_id])).await?;
-    let issuer_address = info["issuerAddress"].as_str().ok_or("Token has no issuer address on record")?.to_string();
-    let unspent = rpc_call_wallet(&creds, "listunspent", serde_json::json!([1, 9999999, [issuer_address.clone()]])).await?;
+
+    if !info["mintAuthorityActive"].as_bool().unwrap_or(false) {
+        return Err("Token mint authority is not active".to_string());
+    }
+
+    let authority_address = info["mintAuthorityAddress"]
+        .as_str()
+        .ok_or("Token has no usable mint authority address")?
+        .to_string();
+
+    let unspent = rpc_call_wallet(
+        &creds,
+        "listunspent",
+        serde_json::json!([1, 9999999, [authority_address.clone()]])
+    ).await?;
+
     let utxos = unspent.as_array().ok_or("listunspent returned unexpected shape")?;
     let clean_utxos = filter_out_token_utxos(&creds, utxos).await?;
-    let first = clean_utxos.iter().find(|u| u["spendable"].as_bool().unwrap_or(false)).ok_or("No spendable pure-CIVIC funds at the issuer address to authorize minting (only token-colored or unspendable UTXOs found)")?;
+    let first = clean_utxos
+        .iter()
+        .find(|u| u["spendable"].as_bool().unwrap_or(false))
+        .ok_or("No spendable pure-CIVIC funds at the current mint authority address")?;
     let txid = first["txid"].as_str().ok_or("Invalid UTXO txid")?;
     let vout = first["vout"].as_i64().ok_or("Invalid UTXO vout")?;
     let inputs = serde_json::json!([{ "txid": txid, "vout": vout }]);
     let token_arg = serde_json::json!({
         "tokenid": token_id,
-        "amountToMint": amount_to_mint,
-        "mintAddress": issuer_address,
+        "amountToMint": amount_to_mint.to_string(),
+        "mintAddress": authority_address,
     });
     let raw_tx = rpc_call(&creds, "createtokenminttx", serde_json::json!([inputs, token_arg])).await?
         .as_str().ok_or("createtokenminttx returned unexpected shape")?.to_string();
-    let funded = rpc_call_wallet(&creds, "fundrawtransaction", serde_json::json!([raw_tx, { "changeAddress": issuer_address }])).await?;
+    let funded = rpc_call_wallet(
+        &creds,
+        "fundrawtransaction",
+        serde_json::json!([raw_tx, { "changeAddress": authority_address }])
+    ).await?;
     let funded_hex = funded["hex"].as_str().ok_or("fundrawtransaction returned unexpected shape")?;
     let signed = rpc_call_wallet(&creds, "signrawtransactionwithwallet", serde_json::json!([funded_hex])).await?;
     if !signed["complete"].as_bool().unwrap_or(false) {
@@ -879,25 +1125,383 @@ async fn wallet_mint_token(app: tauri::AppHandle, token_id: String, amount_to_mi
     Ok(result_txid)
 }
 #[tauri::command]
-async fn wallet_burn_token(app: tauri::AppHandle, token_id: String, amount_to_burn: i64) -> Result<String, String> {
+async fn wallet_transfer_token_authority(
+    app: tauri::AppHandle,
+    token_id: String,
+    role: String,
+    new_authority_address: String,
+) -> Result<String, String> {
     let creds = get_or_create_creds(&app)?;
+
+    if role != "mint" && role != "metadata" {
+        return Err("Authority role must be mint or metadata".to_string());
+    }
+
+    let info =
+        rpc_call(&creds, "gettokeninfo", serde_json::json!([token_id.clone()])).await?;
+
+    let authority_address = if role == "mint" {
+        if info["mintAuthorityTransferLocked"].as_bool().unwrap_or(false) {
+            return Err("Mint authority transfer is permanently locked".to_string());
+        }
+
+        if !info["mintAuthorityActive"].as_bool().unwrap_or(false) {
+            return Err("Mint authority is not active".to_string());
+        }
+
+        info["mintAuthorityAddress"]
+            .as_str()
+            .ok_or("Token has no usable mint authority address")?
+            .to_string()
+    } else {
+        if info["metadataAuthorityTransferLocked"].as_bool().unwrap_or(false) {
+            return Err("Metadata authority transfer is permanently locked".to_string());
+        }
+
+        if !info["metadataAuthorityActive"].as_bool().unwrap_or(false) {
+            return Err("Metadata authority is not active".to_string());
+        }
+
+        info["metadataAuthorityAddress"]
+            .as_str()
+            .ok_or("Token has no usable metadata authority address")?
+            .to_string()
+    };
+
+    let unspent = rpc_call_wallet(
+        &creds,
+        "listunspent",
+        serde_json::json!([1, 9999999, [authority_address.clone()]])
+    ).await?;
+
+    let utxos = unspent
+        .as_array()
+        .ok_or("listunspent returned unexpected shape")?;
+
+    let clean_utxos =
+        filter_out_token_utxos(&creds, utxos).await?;
+
+    let first = clean_utxos
+        .iter()
+        .find(|u| u["spendable"].as_bool().unwrap_or(false))
+        .ok_or("No spendable pure-CIVIC funds at the current authority address")?;
+
+    let txid = first["txid"]
+        .as_str()
+        .ok_or("Invalid authority UTXO txid")?;
+
+    let vout = first["vout"]
+        .as_i64()
+        .ok_or("Invalid authority UTXO vout")?;
+
+    let inputs =
+        serde_json::json!([{ "txid": txid, "vout": vout }]);
+
+    let token_arg = serde_json::json!({
+        "tokenid": token_id,
+        "role": role,
+        "newAuthorityAddress": new_authority_address,
+    });
+
+    let raw_tx = rpc_call(
+        &creds,
+        "createtokenauthorityupdatetx",
+        serde_json::json!([inputs, token_arg])
+    ).await?
+        .as_str()
+        .ok_or("createtokenauthorityupdatetx returned unexpected shape")?
+        .to_string();
+
+    let funded = rpc_call_wallet(
+        &creds,
+        "fundrawtransaction",
+        serde_json::json!([
+            raw_tx,
+            { "changeAddress": authority_address }
+        ])
+    ).await?;
+
+    let funded_hex = funded["hex"]
+        .as_str()
+        .ok_or("fundrawtransaction returned unexpected shape")?;
+
+    let signed = rpc_call_wallet(
+        &creds,
+        "signrawtransactionwithwallet",
+        serde_json::json!([funded_hex])
+    ).await?;
+
+    if !signed["complete"].as_bool().unwrap_or(false) {
+        return Err("Failed to sign authority transfer transaction".to_string());
+    }
+
+    let signed_hex = signed["hex"]
+        .as_str()
+        .ok_or("signrawtransactionwithwallet returned unexpected shape")?;
+
+    rpc_call(
+        &creds,
+        "sendrawtransaction",
+        serde_json::json!([signed_hex])
+    ).await?
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "sendrawtransaction returned unexpected shape".to_string())
+}
+
+#[tauri::command]
+async fn wallet_relinquish_mint_authority(
+    app: tauri::AppHandle,
+    token_id: String,
+) -> Result<String, String> {
+    let creds = get_or_create_creds(&app)?;
+
+    let info =
+        rpc_call(&creds, "gettokeninfo", serde_json::json!([token_id.clone()])).await?;
+
+    if !info["capped"].as_bool().unwrap_or(false) {
+        return Err("Fixed-supply token has no mint authority to relinquish".to_string());
+    }
+
+    if info["mintAuthorityRelinquished"].as_bool().unwrap_or(false) {
+        return Err("Mint authority has already been relinquished".to_string());
+    }
+
+    if !info["mintAuthorityActive"].as_bool().unwrap_or(false) {
+        return Err("Mint authority is no longer active".to_string());
+    }
+
+    let authority_address = info["mintAuthorityAddress"]
+        .as_str()
+        .ok_or("Token has no usable mint authority address")?
+        .to_string();
+
+    let unspent = rpc_call_wallet(
+        &creds,
+        "listunspent",
+        serde_json::json!([1, 9999999, [authority_address.clone()]])
+    ).await?;
+
+    let utxos = unspent
+        .as_array()
+        .ok_or("listunspent returned unexpected shape")?;
+
+    let clean_utxos =
+        filter_out_token_utxos(&creds, utxos).await?;
+
+    let first = clean_utxos
+        .iter()
+        .find(|u| u["spendable"].as_bool().unwrap_or(false))
+        .ok_or("No spendable pure-CIVIC funds at the current mint authority address")?;
+
+    let txid = first["txid"]
+        .as_str()
+        .ok_or("Invalid authority UTXO txid")?;
+
+    let vout = first["vout"]
+        .as_i64()
+        .ok_or("Invalid authority UTXO vout")?;
+
+    let inputs =
+        serde_json::json!([{ "txid": txid, "vout": vout }]);
+
+    let token_arg =
+        serde_json::json!({ "tokenid": token_id });
+
+    let raw_tx = rpc_call(
+        &creds,
+        "createtokenrelinquishminttx",
+        serde_json::json!([inputs, token_arg])
+    ).await?
+        .as_str()
+        .ok_or("createtokenrelinquishminttx returned unexpected shape")?
+        .to_string();
+
+    let funded = rpc_call_wallet(
+        &creds,
+        "fundrawtransaction",
+        serde_json::json!([
+            raw_tx,
+            { "changeAddress": authority_address }
+        ])
+    ).await?;
+
+    let funded_hex = funded["hex"]
+        .as_str()
+        .ok_or("fundrawtransaction returned unexpected shape")?;
+
+    let signed = rpc_call_wallet(
+        &creds,
+        "signrawtransactionwithwallet",
+        serde_json::json!([funded_hex])
+    ).await?;
+
+    if !signed["complete"].as_bool().unwrap_or(false) {
+        return Err("Failed to sign mint-authority relinquish transaction".to_string());
+    }
+
+    let signed_hex = signed["hex"]
+        .as_str()
+        .ok_or("signrawtransactionwithwallet returned unexpected shape")?;
+
+    rpc_call(
+        &creds,
+        "sendrawtransaction",
+        serde_json::json!([signed_hex])
+    ).await?
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "sendrawtransaction returned unexpected shape".to_string())
+}
+
+#[tauri::command]
+async fn wallet_make_metadata_immutable(
+    app: tauri::AppHandle,
+    token_id: String,
+) -> Result<String, String> {
+    let creds = get_or_create_creds(&app)?;
+
+    let info =
+        rpc_call(&creds, "gettokeninfo", serde_json::json!([token_id.clone()])).await?;
+
+    if info["metadataImmutable"].as_bool().unwrap_or(false) {
+        return Err("Token metadata is already permanently immutable".to_string());
+    }
+
+    let metadata = info["metadata"]
+        .as_object()
+        .ok_or("Token has no metadata to make immutable; attach metadata first")?;
+
+    let metadata_uri = metadata
+        .get("uri")
+        .and_then(|v| v.as_str())
+        .ok_or("Token metadata has no URI")?
+        .to_string();
+
+    let metadata_hash = metadata
+        .get("hash")
+        .and_then(|v| v.as_str())
+        .ok_or("Token metadata has no hash")?
+        .to_string();
+
+    let authority_address = info["metadataAuthorityAddress"]
+        .as_str()
+        .ok_or("Token has no usable metadata authority address")?
+        .to_string();
+
+    let unspent = rpc_call_wallet(
+        &creds,
+        "listunspent",
+        serde_json::json!([1, 9999999, [authority_address.clone()]])
+    ).await?;
+
+    let utxos = unspent
+        .as_array()
+        .ok_or("listunspent returned unexpected shape")?;
+
+    let clean_utxos =
+        filter_out_token_utxos(&creds, utxos).await?;
+
+    let first = clean_utxos
+        .iter()
+        .find(|u| u["spendable"].as_bool().unwrap_or(false))
+        .ok_or("No spendable pure-CIVIC funds at the current metadata authority address")?;
+
+    let txid = first["txid"]
+        .as_str()
+        .ok_or("Invalid authority UTXO txid")?;
+
+    let vout = first["vout"]
+        .as_i64()
+        .ok_or("Invalid authority UTXO vout")?;
+
+    let inputs =
+        serde_json::json!([{ "txid": txid, "vout": vout }]);
+
+    let token_arg = serde_json::json!({
+        "tokenid": token_id,
+        "metadataUri": metadata_uri,
+        "metadataHash": metadata_hash,
+        "setImmutable": true,
+    });
+
+    let raw_tx = rpc_call(
+        &creds,
+        "createtokenmetadataupdatetx",
+        serde_json::json!([inputs, token_arg])
+    ).await?
+        .as_str()
+        .ok_or("createtokenmetadataupdatetx returned unexpected shape")?
+        .to_string();
+
+    let funded = rpc_call_wallet(
+        &creds,
+        "fundrawtransaction",
+        serde_json::json!([
+            raw_tx,
+            { "changeAddress": authority_address }
+        ])
+    ).await?;
+
+    let funded_hex = funded["hex"]
+        .as_str()
+        .ok_or("fundrawtransaction returned unexpected shape")?;
+
+    let signed = rpc_call_wallet(
+        &creds,
+        "signrawtransactionwithwallet",
+        serde_json::json!([funded_hex])
+    ).await?;
+
+    if !signed["complete"].as_bool().unwrap_or(false) {
+        return Err("Failed to sign metadata-immutable transaction".to_string());
+    }
+
+    let signed_hex = signed["hex"]
+        .as_str()
+        .ok_or("signrawtransactionwithwallet returned unexpected shape")?;
+
+    rpc_call(
+        &creds,
+        "sendrawtransaction",
+        serde_json::json!([signed_hex])
+    ).await?
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "sendrawtransaction returned unexpected shape".to_string())
+}
+
+#[tauri::command]
+async fn wallet_burn_token(app: tauri::AppHandle, token_id: String, amount_to_burn: String) -> Result<String, String> {
+    let creds = get_or_create_creds(&app)?;
+
+    let amount_to_burn: u64 = amount_to_burn
+        .parse()
+        .map_err(|_| "Burn amount must be a valid unsigned integer".to_string())?;
+
+    if amount_to_burn == 0 {
+        return Err("Burn amount must be greater than zero".to_string());
+    }
     let utxos_val = rpc_call_wallet(&creds, "listtokenunspent", serde_json::json!([token_id])).await?;
     let all_utxos = utxos_val.as_array().ok_or("listtokenunspent returned unexpected shape")?;
     let utxos = filter_owned_token_utxos(&creds, all_utxos).await?;
 
     let mut inputs = Vec::new();
-    let mut total: i64 = 0;
+    let mut total: u64 = 0;
     let mut source_address: Option<String> = None;
     for u in &utxos {
         if total >= amount_to_burn { break; }
         let txid = u["txid"].as_str().ok_or("Invalid token UTXO txid")?;
         let vout = u["vout"].as_i64().ok_or("Invalid token UTXO vout")?;
-        let utxo_amount = u["amount"].as_i64().ok_or("Invalid token UTXO amount")?;
+        let utxo_amount =
+            parse_token_u64_value(&u["amount"], "token UTXO amount")?;
         if source_address.is_none() {
             source_address = u["address"].as_str().map(|s| s.to_string());
         }
         inputs.push(serde_json::json!({ "txid": txid, "vout": vout }));
-        total += utxo_amount;
+        total = total
+            .checked_add(utxo_amount)
+            .ok_or("Token input total overflow")?;
     }
     if total < amount_to_burn {
         return Err("Not enough token balance to burn this amount".to_string());
@@ -906,7 +1510,7 @@ async fn wallet_burn_token(app: tauri::AppHandle, token_id: String, amount_to_bu
 
     let mut token_arg = serde_json::json!({
         "tokenid": token_id,
-        "amountToBurn": amount_to_burn,
+        "amountToBurn": amount_to_burn.to_string(),
     });
     let leftover = total - amount_to_burn;
     if leftover > 0 {
@@ -929,37 +1533,117 @@ async fn wallet_burn_token(app: tauri::AppHandle, token_id: String, amount_to_bu
 async fn wallet_convert_token(
     app: tauri::AppHandle,
     token_id: String,
-    amount_to_burn: i64,
+    amount_to_burn: String,
 ) -> Result<String, String> {
     let creds = get_or_create_creds(&app)?;
 
-    // Locate the token's reserve-lock UTXO. It is not owned by any wallet
-    // (unspendable by any key) so it can't be found via listunspent -- we
-    // rely on it still being at (issueTxid, 0), which only holds if this
-    // token has never had a prior partial redemption.
-    let info = rpc_call(&creds, "gettokeninfo", serde_json::json!([token_id])).await?;
-    let issue_txid = info["issueTxid"].as_str().ok_or("Could not read this token's issuance txid")?;
-    let reserve_out = rpc_call(&creds, "gettxout", serde_json::json!([issue_txid, 0])).await?;
-    if reserve_out.is_null() || reserve_out["scriptPubKey"]["type"].as_str() != Some("token_reserve") {
-        return Err("Could not automatically locate this token's reserve funds -- it may have already been partially redeemed before, which isn't supported yet".to_string());
+    let amount_to_burn: u64 = amount_to_burn
+        .parse()
+        .map_err(|_| "Redeem amount must be a valid unsigned integer".to_string())?;
+
+    if amount_to_burn == 0 {
+        return Err("Redeem amount must be greater than zero".to_string());
     }
+
+    // Validate that the token exists before doing the UTXO-set scan.
+    rpc_call(
+        &creds,
+        "gettokeninfo",
+        serde_json::json!([token_id]),
+    )
+    .await?;
+
+    // Core builds the reserve script as:
+    //   PUSH(32-byte internal uint256 tokenID) OP_TOKEN_RESERVE
+    //
+    // RPC token IDs use uint256::GetHex(), which is the reverse byte order of
+    // the internal uint256 byte array used by BuildTokenReserveScript().
+    // OP_TOKEN_RESERVE is OP_NOP4 = 0xb3, so the exact 34-byte script is:
+    //
+    //   0x20 || reverse_bytes(token_id_hex) || 0xb3
+    //
+    // Scan the active UTXO set for that exact script. This locates the current
+    // reserve after issuance as well as after any number of partial CONVERT_OUT
+    // transactions, without depending on the original issueTxid:vout.
+    if token_id.len() != 64 ||
+        !token_id.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err("Token ID must be exactly 32 bytes of hexadecimal".to_string());
+    }
+
+    let mut token_id_internal = Vec::with_capacity(32);
+    for i in (0..64).step_by(2) {
+        let byte = u8::from_str_radix(&token_id[i..i + 2], 16)
+            .map_err(|_| "Token ID contains invalid hexadecimal".to_string())?;
+        token_id_internal.push(byte);
+    }
+    token_id_internal.reverse();
+
+    let internal_hex = token_id_internal
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+
+    let reserve_script_hex = format!("20{}b3", internal_hex);
+    let reserve_descriptor = format!("raw({})", reserve_script_hex);
+
+    let scan = rpc_call(
+        &creds,
+        "scantxoutset",
+        serde_json::json!(["start", [reserve_descriptor]]),
+    )
+    .await?;
+
+    if scan["success"].as_bool() != Some(true) {
+        return Err("Reserve UTXO scan did not complete successfully".to_string());
+    }
+
+    let reserve_utxos = scan["unspents"]
+        .as_array()
+        .ok_or("scantxoutset returned unexpected shape")?;
+
+    if reserve_utxos.is_empty() {
+        return Err(
+            "No active reserve-lock UTXO found for this token; its reserve may already be fully redeemed"
+                .to_string(),
+        );
+    }
+
+    if reserve_utxos.len() != 1 {
+        return Err(format!(
+            "Expected exactly one active reserve-lock UTXO for this token, found {}",
+            reserve_utxos.len()
+        ));
+    }
+
+    let reserve_utxo = &reserve_utxos[0];
+    let reserve_txid = reserve_utxo["txid"]
+        .as_str()
+        .ok_or("Reserve UTXO has no valid txid")?
+        .to_string();
+    let reserve_vout = reserve_utxo["vout"]
+        .as_i64()
+        .ok_or("Reserve UTXO has no valid vout")?;
 
     let utxos_val = rpc_call_wallet(&creds, "listtokenunspent", serde_json::json!([token_id])).await?;
     let all_utxos = utxos_val.as_array().ok_or("listtokenunspent returned unexpected shape")?;
     let utxos = filter_owned_token_utxos(&creds, all_utxos).await?;
     let mut token_inputs = Vec::new();
-    let mut token_total: i64 = 0;
+    let mut token_total: u64 = 0;
     let mut token_source_address: Option<String> = None;
     for u in &utxos {
         if token_total >= amount_to_burn { break; }
         let txid = u["txid"].as_str().ok_or("Invalid token UTXO txid")?;
         let vout = u["vout"].as_i64().ok_or("Invalid token UTXO vout")?;
-        let utxo_amount = u["amount"].as_i64().ok_or("Invalid token UTXO amount")?;
+        let utxo_amount =
+            parse_token_u64_value(&u["amount"], "token UTXO amount")?;
         if token_source_address.is_none() {
             token_source_address = u["address"].as_str().map(|s| s.to_string());
         }
         token_inputs.push(serde_json::json!({ "txid": txid, "vout": vout }));
-        token_total += utxo_amount;
+        token_total = token_total
+            .checked_add(utxo_amount)
+            .ok_or("Token input total overflow")?;
     }
     if token_total < amount_to_burn {
         return Err("Not enough token balance to redeem this amount".to_string());
@@ -990,13 +1674,16 @@ async fn wallet_convert_token(
     let civic_source_address = civic_utxo["address"].as_str().ok_or("Selected CIVIC UTXO has no address")?.to_string();
     let change_address = civic_source_address;
 
-    let mut inputs = vec![serde_json::json!({ "txid": issue_txid, "vout": 0 })];
+    let mut inputs = vec![serde_json::json!({
+        "txid": reserve_txid,
+        "vout": reserve_vout
+    })];
     inputs.extend(token_inputs);
     inputs.push(serde_json::json!({ "txid": civic_txid, "vout": civic_vout }));
 
     let mut token_params = serde_json::json!({
         "tokenid": token_id,
-        "amountToBurn": amount_to_burn,
+        "amountToBurn": amount_to_burn.to_string(),
         "redemptionAddress": redemption_address,
         "feeAmount": fee_amount as f64 / 100_000_000.0,
         "changeAddress": change_address,
@@ -1019,7 +1706,8 @@ async fn wallet_convert_token(
         // failed to sign.
         let only_reserve_input_unsigned = signed["errors"].as_array()
             .map(|errs| errs.iter().all(|e| {
-                e["txid"].as_str() == Some(issue_txid) && e["vout"].as_i64() == Some(0)
+                e["txid"].as_str() == Some(reserve_txid.as_str()) &&
+                    e["vout"].as_i64() == Some(reserve_vout)
             }))
             .unwrap_or(false);
         if !only_reserve_input_unsigned {
@@ -1085,11 +1773,15 @@ pub fn run() {
             wallet_transfer_token,
             wallet_convert_token,
             wallet_mint_token,
+            wallet_transfer_token_authority,
+            wallet_relinquish_mint_authority,
+            wallet_make_metadata_immutable,
             wallet_burn_token,
             wallet_list_addresses,
             wallet_backup,
             get_app_version,
             wallet_list_tokens,
+            wallet_get_token_issuance_params,
             wallet_get_token_info,
             wallet_get_transaction,
             wallet_upload_logo,

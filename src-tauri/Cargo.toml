@@ -1,6 +1,6 @@
 [package]
 name = "civicnet-wallet"
-version = "0.1.1"
+version = "0.1.2"
 description = "CivicNet Wallet"
 authors = ["you"]
 edition = "2021"

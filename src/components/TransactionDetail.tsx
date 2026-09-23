@@ -40,6 +40,8 @@ export default function TransactionDetail({ txid, onBack }: TransactionDetailPro
     setTimeout(() => setCopied(false), 1500);
   }
 
+  const isStake = info?.details?.some((d) => d.category === "stake") ?? false;
+
   return (
     <div className="flex-1 overflow-y-auto px-8 py-6">
       <button onClick={onBack} className="mb-4 flex items-center gap-1.5 text-sm text-slate-400 hover:text-white">
@@ -54,7 +56,9 @@ export default function TransactionDetail({ txid, onBack }: TransactionDetailPro
 
           <div className="mb-4 rounded-2xl border border-white/5 bg-[#111726] p-5">
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm text-slate-400">Net Amount</span>
+              <span className="text-sm text-slate-400">
+                {isStake ? "Staking Reward" : "Net Amount"}
+              </span>
               {info.confirmations > 0 ? (
                 <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-400">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Confirmed
@@ -120,7 +124,11 @@ export default function TransactionDetail({ txid, onBack }: TransactionDetailPro
                   {info.details.map((d, i) => (
                     <div key={i} className="flex items-center justify-between text-xs">
                       <span className="font-mono text-slate-400">
-                        {d.address ? `${d.address.slice(0, 10)}...${d.address.slice(-6)}` : d.category}
+                        {d.address
+                          ? `${d.address.slice(0, 10)}...${d.address.slice(-6)}`
+                          : d.category === "stake"
+                          ? "Staking Reward"
+                          : d.category}
                       </span>
                       <span className={d.amount >= 0 ? "text-emerald-400" : "text-red-400"}>
                         {d.amount >= 0 ? "+" : ""}

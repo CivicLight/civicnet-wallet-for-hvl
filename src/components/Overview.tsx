@@ -35,8 +35,22 @@ function timeAgo(unixSeconds: number): string {
 }
 
 function TxRow({ tx, onClick }: { tx: WalletTx; onClick: () => void }) {
-  const isReceive = tx.category === "receive" || tx.category === "generate" || tx.category === "immature";
-  const label = isReceive ? "Received" : tx.category === "send" ? "Sent" : tx.category;
+  const isReceive =
+    tx.category === "receive" ||
+    tx.category === "generate" ||
+    tx.category === "immature" ||
+    tx.category === "stake";
+
+  const label =
+    tx.category === "stake"
+      ? "Staking Reward"
+      : tx.category === "generate" || tx.category === "immature"
+      ? "Mining Reward"
+      : isReceive
+      ? "Received"
+      : tx.category === "send"
+      ? "Sent"
+      : tx.category;
   const sign = isReceive ? "+" : "-";
   const colorClass = isReceive ? "text-emerald-400" : "text-red-400";
 

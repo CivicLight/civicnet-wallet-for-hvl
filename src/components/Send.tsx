@@ -51,7 +51,7 @@ export default function Send({ balance, onSent }: SendProps) {
             type="text"
             value={address}
             onChange={(e) => setAddress(e.target.value)}
-            placeholder="rcivc1q..."
+            placeholder="civc1q..."
             className="w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2.5 font-mono text-sm text-white placeholder-slate-600 outline-none focus:border-blue-500"
           />
         </div>
