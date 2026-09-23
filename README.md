@@ -1,119 +1,374 @@
 # CivicNet Wallet for HVL
 
-Official desktop wallet for [CivicNet (CIVIC)](https://civiclight.xyz/) — send and receive CIVIC, stake to earn rewards, and create your own tokens on CivicNet's Hybrid Value Layer (HVL).
+Official desktop wallet for [CivicNet (CIVIC)](https://civiclight.xyz/).
+
+CivicNet Wallet is a full desktop wallet for managing CIVIC, participating in staking, and using CivicNet's native Hybrid Value Layer (HVL) token system.
+
+The wallet bundles CivicNet Core and manages the node automatically, so users can interact with the CivicNet blockchain without manually configuring a node, RPC connection, or command-line environment.
 
 ## Features
 
-* Modern dashboard UI (React + Tailwind)
-* Bundles a full CivicNet node — no separate node setup required
-* Send / Receive CIVIC with QR codes
-* Staking with a dedicated "staking-only" wallet unlock (spending stays locked while staking)
-* Create custom tokens on the Hybrid Value Layer: fixed or capped (mintable) supply, optional vesting, logo + description + social links stored on IPFS
-* View all tokens you hold or created, with live balances and logos
-* Full transaction and token history
-* Multiple receiving addresses with per-address balances
-* Wallet encryption, passphrase change, private key export/import (single key or full wallet dump)
+### CIVIC Wallet
 
-## Requirements
-
-* Windows 10 or newer, 64-bit
-
-## How it works
-
-This wallet bundles a `civicnet-node` binary and runs it in the background, communicating over the local RPC interface — the same node used for mining pools and the standalone `civicnet-qt` wallet, but managed automatically so you never touch a config file or the command line.
-
-## Installation
-
-Download the latest installer from the [Releases](https://github.com/CivicLight/civicnet-wallet-for-hvl/releases) page and run it. Windows may show a SmartScreen warning since the installer isn't code-signed — click "More info" → "Run anyway".
-
-## Getting Started
-
-### First launch
-
-On first launch, the wallet creates a new node data directory and wallet, then begins syncing with the CivicNet network. This can take a few minutes depending on your connection. You'll see the sync progress on the Overview page.
-
-### Protect your wallet (do this first!)
-
-New wallets are **not encrypted by default**. Before you send any funds to this wallet, go to **Overview** or **Staking** and use the "Set Wallet Passphrase" prompt on the Staking card to set your first passphrase. Anyone with access to your computer can spend your funds until you do this. Once set, use **Settings → Change Passphrase** if you ever want to change it later.
-
-### Sending & Receiving CIVIC
-
-* **Receive**: go to the Receive page for your address and QR code. Click "Generate New Address" for a fresh one — old addresses stay valid and their balance is included in your total.
-* **Send**: go to Send, paste the recipient's address, enter an amount, confirm.
+- Send and receive CIVIC
+- Generate multiple receiving addresses
+- QR-code receiving addresses
+- Per-address balances
+- Full CIVIC transaction activity
+- Wallet backup
+- Wallet encryption and passphrase management
+- Private key export and import
+- Full wallet key dump export and import
 
 ### Staking
 
-CivicNet uses a hybrid PoW/PoS design — any CIVIC in your unlocked wallet is automatically eligible to stake, with no minimum balance and no lock-up period. To stake:
+CivicNet uses a hybrid Proof-of-Work and Proof-of-Stake consensus model.
 
-1. Go to **Staking**.
-2. Click **Unlock for Staking** and enter your passphrase.
-3. Your wallet is now unlocked in staking-only mode — it can stake blocks, but spending (Send, token creation, etc.) stays locked until you unlock normally or click **Lock Wallet**.
+The wallet supports:
 
-### Creating a Token (Hybrid Value Layer)
+- PoS staking directly from the desktop wallet
+- Staking-only wallet unlock
+- Normal wallet unlock for spending
+- Wallet lock controls
+- Staking status and balance information
 
-CivicNet's Hybrid Value Layer lets any wallet issue its own token directly on the CivicNet blockchain — no smart contracts, fully native. Anti-spam fee logic, transaction structure, and validation are all part of the network's consensus rules.
+Staking-only unlock allows the wallet to participate in staking while keeping normal spending operations locked.
 
-To create a token:
+## Hybrid Value Layer (HVL)
 
-1. Go to **Create Asset**.
-2. **Symbol**: 1-12 characters, A-Z and 0-9 only (e.g. `MYTOKEN`).
-3. **Decimals**: how many decimal places your token supports (0-8). This also determines your token's *maximum possible whole-number supply*, since the network's hard cap is 1,000,000,000 in the token's smallest unit:
+HVL is CivicNet's native protocol-level token layer.
 
-   | Decimals | Max whole-token supply |
-   |---|---|
-   | 0 | 1,000,000,000 |
-   | 2 | 10,000,000 |
-   | 4 | 100,000 |
-   | 6 | 1,000 |
-   | 8 | 10 |
+Tokens are created and managed directly on the CivicNet blockchain without requiring smart contracts or an external token network.
 
-   Pick a low decimal count (0-2) for a large supply; pick a higher one only if you need fine-grained fractional amounts.
-4. **Token Name**: a display name up to 32 characters.
-5. **Initial Supply**: how many whole tokens to mint at creation (the form shows your live maximum based on the Decimals you picked above).
-6. **Reserve Lock**: CIVIC to lock as your token's reserve (required, must be greater than 0).
-7. **Allow minting more supply later (capped)**: check this if you want the ability to mint additional supply after creation, up to a **Supply Cap** you set. Leave unchecked for a permanently fixed supply — this is visible to everyone who looks up your token, and is a trust signal for holders (no mint authority means no future inflation risk).
-8. **Logo** (optional): click "Choose Logo Image" and pick a PNG/JPG/WEBP/SVG file. You can also add a **Description** and **Website / Twitter / Telegram** links. These are uploaded to IPFS automatically and attached to your token on-chain as a follow-up transaction once the issuance confirms.
-9. Click **Create Asset**. The wallet builds, funds, signs, and broadcasts the issuance transaction for you — including the network's anti-spam issuance fee, computed automatically.
+CivicNet Wallet provides a graphical interface for HVL operations.
 
-Your new token appears on the **Assets** page once the transaction confirms (usually within a couple of minutes).
+### Token Creation
 
-### Viewing your Assets
+Users can create tokens with:
 
-The **Assets** page lists CIVIC plus every token you hold, with live balances and logos. Click any token to see its full details — issuer, supply, decimals, mint status, and more.
+- Custom token name
+- Custom symbol
+- 0-8 decimal places
+- Initial supply
+- Fixed or capped/mintable supply model
+- Optional vesting
+- CIVIC reserve backing
+- Logo and metadata
+- Description
+- Website
+- X / Twitter
+- Telegram
 
-### Activity
+Token metadata can be stored through IPFS and linked to the token on-chain.
 
-The **Activity** page shows your full CIVIC transaction history. Click any transaction to see its confirmation status, block height, and a breakdown of the transfer.
+### Token Operations
 
-### Addresses
+Supported HVL operations include:
 
-The **Addresses** page lists every address this wallet has generated, along with its individual balance.
+- Issue
+- Mint
+- Transfer
+- Burn
+- Convert Out / Redeem
+- Metadata update
+- Token authority transfer
+- Mint authority relinquishment
+- Metadata finalization / permanent metadata immutability
 
-### Backup & Security (Settings page)
+### Convert Out / Redeem
 
-* **Change Passphrase**: change your wallet's existing passphrase.
-* **Export/Import Private Keys**: export a full dump of every key in this wallet (keep this file offline and encrypted — anyone with it can spend your funds), import a single private key (e.g. from another wallet or an exchange), or import a full dump file from elsewhere.
-* **Backup Wallet**: saves a copy of your wallet file.
-* **Exit Wallet**: cleanly shuts down the wallet and its background node process.
+HVL tokens can use CIVIC locked in their reserve.
+
+Convert Out allows supported tokens to be redeemed according to the token's reserve state and CivicNet consensus rules.
+
+The wallet automatically tracks the current reserve output required for subsequent redemption transactions.
+
+### Token Authority
+
+HVL provides explicit authority controls.
+
+Depending on the token configuration, an issuer may be able to:
+
+- mint additional supply;
+- transfer token authority;
+- relinquish mint authority;
+- update metadata;
+- permanently make metadata immutable.
+
+Authority state is recorded by CivicNet and can be inspected from the wallet or block explorer.
+
+### Token Details
+
+The wallet displays detailed token information including:
+
+- Token ID
+- Symbol
+- Name
+- Decimals
+- Current supply
+- Initial supply
+- Supply cap
+- Reserve amount
+- Issuer
+- Mint state
+- Metadata state
+- Authority state
+- Token activity
+- Lifecycle information
+
+## Token Supply and Decimals
+
+HVL supports token decimals from `0` to `8`.
+
+Token amounts are handled internally as exact raw integer units. The wallet converts between human-readable token amounts and raw units without using floating-point arithmetic for transaction amounts.
+
+Token issuance is subject to CivicNet consensus limits and validation rules.
+
+## CIVIC Reserve
+
+HVL token issuance requires CIVIC to be locked as reserve according to CivicNet consensus rules.
+
+The current minimum reserve required by the network is:
+
+250 CIVIC
+
+Reserve funds remain part of the token's on-chain state and may be used by supported Convert Out / Redeem operations.
+
+## How It Works
+
+CivicNet Wallet is built with:
+
+- Tauri
+- Rust
+- React
+- TypeScript
+- Tailwind CSS
+
+The application bundles a `civicnet-node` sidecar.
+
+When the wallet starts:
+
+1. CivicNet Core starts in the background.
+2. The wallet connects to the local node through RPC.
+3. CivicNet Core validates and synchronizes the blockchain.
+4. Wallet operations are submitted to the local node.
+5. HVL validation and token state are handled by CivicNet consensus logic.
+
+The wallet does not depend on a remote custodial service for normal blockchain operation. Private keys and wallet data remain under the user's local wallet environment.
+
+## Installation
+
+Download the latest Windows installer from the official [GitHub Releases](https://github.com/CivicLight/civicnet-wallet-for-hvl/releases) page.
+
+Run the installer and launch **CivicNet Wallet**.
+
+### Windows SmartScreen
+
+The installer is currently not code-signed, so Windows may display a SmartScreen warning.
+
+If the installer was downloaded from the official CivicLight GitHub repository:
+
+1. Click **More info**
+2. Click **Run anyway**
+
+## First Launch
+
+On first launch, CivicNet Wallet:
+
+1. Creates its local CivicNet node data directory.
+2. Creates or opens the wallet.
+3. Starts the bundled CivicNet Core node.
+4. Connects to the CivicNet network.
+5. Begins blockchain synchronization.
+
+Some wallet and HVL operations require the node to be fully synchronized.
+
+Synchronization time depends on network connectivity, disk performance, and the current blockchain state.
+
+## Sending CIVIC
+
+Open **Send** and:
+
+1. Enter the destination CivicNet address.
+2. Enter the amount of CIVIC.
+3. Review the transaction.
+4. Confirm and broadcast.
+
+The wallet prepares and submits the transaction through the local CivicNet Core node.
+
+## Receiving CIVIC
+
+Open **Receive** to view a receiving address and QR code.
+
+You can generate additional receiving addresses at any time.
+
+Previously generated addresses remain valid and balances from all wallet addresses contribute to the wallet's total balance.
+
+## Staking
+
+Open the **Staking** page to manage Proof-of-Stake participation.
+
+For an encrypted wallet:
+
+1. Open **Staking**.
+2. Unlock the wallet using staking-only mode.
+3. Keep the wallet and node running while staking.
+
+Staking-only mode allows staking operations while preventing normal spending operations.
+
+When spending CIVIC or performing HVL operations, the wallet may require a normal wallet unlock instead.
+
+## Creating an HVL Token
+
+Open **Create Asset**.
+
+The wallet guides the issuer through the token issuance process, including:
+
+1. Token name
+2. Symbol
+3. Decimals
+4. Initial supply
+5. Supply model
+6. Supply cap, when applicable
+7. CIVIC reserve
+8. Optional vesting
+9. Logo and metadata
+10. Issuance confirmation
+
+The wallet prepares, funds, signs, and broadcasts the required transaction.
+
+Protocol fees, reserve requirements, and issuance validation are enforced by CivicNet consensus rules.
+
+## Managing an HVL Token
+
+For tokens controlled by the active wallet, supported management operations may include:
+
+- Mint additional supply
+- Transfer tokens
+- Burn tokens
+- Convert Out / Redeem
+- Update metadata
+- Transfer token authority
+- Relinquish mint authority
+- Permanently make metadata immutable
+
+Available operations depend on the token's current state and authority configuration.
+
+Once an authority is permanently relinquished or metadata is made immutable, that state is enforced by the CivicNet protocol and cannot be reversed through the wallet.
+
+## Assets
+
+The **Assets** page displays:
+
+- CIVIC
+- HVL tokens held by the wallet
+- Token balances
+- Token logos and metadata when available
+
+Selecting a token opens its detailed view.
+
+## Token Detail
+
+The token detail view provides access to available token information and supported operations.
+
+Depending on the token, this may include:
+
+- Supply information
+- Reserve information
+- Issuer information
+- Authority status
+- Metadata status
+- Mint controls
+- Burn controls
+- Transfer
+- Convert Out
+- Authority management
+- Token lifecycle information
+
+## Activity
+
+The **Activity** page displays wallet transaction history.
+
+Transaction details may include:
+
+- Transaction ID
+- Confirmation status
+- Block height
+- CIVIC transfers
+- HVL operations
+- Token amounts
+- Transaction direction
+
+## Addresses
+
+The **Addresses** page lists addresses generated or managed by the wallet together with their individual CIVIC balances.
+
+## Wallet Backup & Security
+
+The wallet provides tools for:
+
+- Wallet encryption
+- Passphrase changes
+- Wallet backup
+- Private key export
+- Private key import
+- Full wallet key dump export
+- Full wallet key dump import
+
+### Important Security Notes
+
+- Use a strong wallet passphrase.
+- Keep wallet backups in a secure location.
+- Keep exported private keys offline whenever possible.
+- Never share private keys or wallet dump files.
+- Anyone with access to a private key can control funds associated with that key.
+- Verify wallet downloads against the official CivicLight repositories.
 
 ## Building from Source
 
-Requires Node.js 18+, Rust (stable), and for Windows builds from Linux/WSL, a MinGW cross-compile toolchain.
+### Requirements
 
-```bash
-npm install
-npm run tauri dev        # development mode
-cargo tauri build --target x86_64-pc-windows-gnu   # release installer
-```
+- Node.js 18+
+- Rust stable
+- Tauri development dependencies
+- MinGW cross-compile toolchain for Windows builds from Linux or WSL
 
-The wallet expects a `civicnet-node` binary for each target platform in `src-tauri/binaries/` (see the [CivicNet Releases](https://github.com/CivicLight/CivicNet/releases) page for prebuilt node binaries) — Tauri's sidecar naming convention requires the target-triple suffix, e.g. `civicnet-node-x86_64-pc-windows-gnu.exe`.
+Install dependencies:
 
-## Links
+    npm install
 
-* Website: https://civiclight.xyz
-* Node & core wallet source: https://github.com/CivicLight/CivicNet
-* Block explorer: https://explorer2.civiclight.xyz
+Run in development mode:
+
+    npm run tauri dev
+
+Build the Windows release installer:
+
+    cargo tauri build --target x86_64-pc-windows-gnu
+
+The wallet expects the CivicNet Core sidecar in:
+
+    src-tauri/binaries/
+
+Tauri requires the target triple in the sidecar filename.
+
+Example:
+
+    civicnet-node-x86_64-pc-windows-gnu.exe
+
+CivicNet Core source and releases are available at:
+
+https://github.com/CivicLight/CivicNet
+
+## Project Links
+
+- Website: https://civiclight.xyz
+- CivicNet Core: https://github.com/CivicLight/CivicNet
+- Wallet Releases: https://github.com/CivicLight/civicnet-wallet-for-hvl/releases
+- Block Explorer: https://explorer2.civiclight.xyz
+- Public RPC: https://rpc.civiclight.xyz
+- Telegram: https://t.me/civiclight
+- X / Twitter: https://x.com/civiclight
 
 ## License
 
-See the CivicNet main repository for license details.
+See the CivicNet Core repository for project license information.
